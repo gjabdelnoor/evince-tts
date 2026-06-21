@@ -1,0 +1,7 @@
+evince-46.3.1/build/
+*.log
+*.ps
+sample.pdf
+evince_*.orig.tar.*
+evince_*.debian.tar.*
+evince_*.dsc

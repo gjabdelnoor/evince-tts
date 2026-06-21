@@ -1,0 +1,318 @@
+/* ev-tts-minimax.c */
+
+#include "ev-tts-minimax.h"
+
+#include <libsoup/soup.h>
+#include <json-glib/json-glib.h>
+#include <string.h>
+
+struct _EvTtsMiniMax {
+        GObject       parent_instance;
+
+        SoupSession  *session;
+
+        char    *host;       /* e.g. api.minimax.io */
+        char    *group_id;
+        char    *api_key;
+        char    *voice_id;
+        char    *model;
+        double   speed;
+        double   vol;
+        int      pitch;
+};
+
+G_DEFINE_FINAL_TYPE (EvTtsMiniMax, ev_tts_minimax, G_TYPE_OBJECT)
+
+static void
+ev_tts_minimax_finalize (GObject *object)
+{
+        EvTtsMiniMax *self = EV_TTS_MINIMAX (object);
+
+        g_clear_object (&self->session);
+        g_clear_pointer (&self->host, g_free);
+        g_clear_pointer (&self->group_id, g_free);
+        g_clear_pointer (&self->api_key, g_free);
+        g_clear_pointer (&self->voice_id, g_free);
+        g_clear_pointer (&self->model, g_free);
+
+        G_OBJECT_CLASS (ev_tts_minimax_parent_class)->finalize (object);
+}
+
+static void
+ev_tts_minimax_class_init (EvTtsMiniMaxClass *klass)
+{
+        G_OBJECT_CLASS (klass)->finalize = ev_tts_minimax_finalize;
+}
+
+static void
+ev_tts_minimax_init (EvTtsMiniMax *self)
+{
+        self->session = soup_session_new ();
+        self->host    = g_strdup ("api.minimax.io");
+        self->model   = g_strdup ("speech-2.6-hd");
+        self->speed   = 1.0;
+        self->vol     = 1.0;
+        self->pitch   = 0;
+}
+
+EvTtsMiniMax *
+ev_tts_minimax_new (void)
+{
+        return g_object_new (EV_TYPE_TTS_MINIMAX, NULL);
+}
+
+void
+ev_tts_minimax_configure (EvTtsMiniMax *self,
+                          const char   *host,
+                          const char   *group_id,
+                          const char   *api_key,
+                          const char   *voice_id,
+                          const char   *model,
+                          double        speed,
+                          double        vol,
+                          int           pitch)
+{
+        g_return_if_fail (EV_IS_TTS_MINIMAX (self));
+
+        if (host && *host) {
+                g_free (self->host);
+                self->host = g_strdup (host);
+        }
+        g_free (self->group_id);
+        self->group_id = g_strdup (group_id ? group_id : "");
+        g_free (self->api_key);
+        self->api_key = g_strdup (api_key ? api_key : "");
+        g_free (self->voice_id);
+        self->voice_id = g_strdup (voice_id ? voice_id : "");
+        if (model && *model) {
+                g_free (self->model);
+                self->model = g_strdup (model);
+        }
+        self->speed = speed > 0 ? speed : 1.0;
+        self->vol   = vol   > 0 ? vol   : 1.0;
+        self->pitch = pitch;
+}
+
+gboolean
+ev_tts_minimax_is_configured (EvTtsMiniMax *self)
+{
+        g_return_val_if_fail (EV_IS_TTS_MINIMAX (self), FALSE);
+
+        return self->host && *self->host &&
+               self->group_id && *self->group_id &&
+               self->api_key && *self->api_key &&
+               self->voice_id && *self->voice_id;
+}
+
+/* Decode a hex string into raw bytes. Returns NULL on malformed input. */
+static GBytes *
+hex_decode (const char *hex,
+            gsize       hex_len)
+{
+        guint8 *out;
+        gsize   out_len;
+
+        if (hex_len % 2 != 0)
+                return NULL;
+
+        out_len = hex_len / 2;
+        out = g_malloc (out_len ? out_len : 1);
+
+        for (gsize i = 0; i < out_len; i++) {
+                int hi = g_ascii_xdigit_value (hex[2 * i]);
+                int lo = g_ascii_xdigit_value (hex[2 * i + 1]);
+                if (hi < 0 || lo < 0) {
+                        g_free (out);
+                        return NULL;
+                }
+                out[i] = (hi << 4) | lo;
+        }
+
+        return g_bytes_new_take (out, out_len);
+}
+
+/* Build the JSON request body. */
+static char *
+build_request_body (EvTtsMiniMax *self,
+                    const char   *text,
+                    gsize        *len_out)
+{
+        g_autoptr (JsonBuilder) b = json_builder_new ();
+
+        json_builder_begin_object (b);
+
+        json_builder_set_member_name (b, "model");
+        json_builder_add_string_value (b, self->model);
+
+        json_builder_set_member_name (b, "text");
+        json_builder_add_string_value (b, text);
+
+        json_builder_set_member_name (b, "stream");
+        json_builder_add_boolean_value (b, FALSE);
+
+        json_builder_set_member_name (b, "voice_setting");
+        json_builder_begin_object (b);
+        json_builder_set_member_name (b, "voice_id");
+        json_builder_add_string_value (b, self->voice_id);
+        json_builder_set_member_name (b, "speed");
+        json_builder_add_double_value (b, self->speed);
+        json_builder_set_member_name (b, "vol");
+        json_builder_add_double_value (b, self->vol);
+        json_builder_set_member_name (b, "pitch");
+        json_builder_add_int_value (b, self->pitch);
+        json_builder_end_object (b);
+
+        json_builder_set_member_name (b, "audio_setting");
+        json_builder_begin_object (b);
+        json_builder_set_member_name (b, "format");
+        json_builder_add_string_value (b, "mp3");
+        json_builder_set_member_name (b, "sample_rate");
+        json_builder_add_int_value (b, 32000);
+        json_builder_set_member_name (b, "channel");
+        json_builder_add_int_value (b, 1);
+        json_builder_end_object (b);
+
+        json_builder_end_object (b);
+
+        g_autoptr (JsonGenerator) gen = json_generator_new ();
+        g_autoptr (JsonNode) root = json_builder_get_root (b);
+        json_generator_set_root (gen, root);
+
+        return json_generator_to_data (gen, len_out);
+}
+
+/* Parse the response: pull data.audio (hex) -> MP3 GBytes.
+ * On API error, sets error from base_resp.status_msg. */
+static GBytes *
+parse_response (GBytes  *body,
+                GError **error)
+{
+        gsize        size = 0;
+        const char  *data = g_bytes_get_data (body, &size);
+        g_autoptr (JsonParser) parser = json_parser_new ();
+
+        if (!json_parser_load_from_data (parser, data, size, error))
+                return NULL;
+
+        JsonNode *root = json_parser_get_root (parser);
+        if (!JSON_NODE_HOLDS_OBJECT (root)) {
+                g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                                     "Unexpected TTS response (not a JSON object)");
+                return NULL;
+        }
+        JsonObject *obj = json_node_get_object (root);
+
+        /* Check base_resp.status_code */
+        if (json_object_has_member (obj, "base_resp")) {
+                JsonObject *base = json_object_get_object_member (obj, "base_resp");
+                gint64 code = json_object_get_int_member_with_default (base, "status_code", 0);
+                if (code != 0) {
+                        const char *msg = json_object_get_string_member_with_default (
+                                base, "status_msg", "unknown error");
+                        g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                                     "MiniMax TTS error %" G_GINT64_FORMAT ": %s", code, msg);
+                        return NULL;
+                }
+        }
+
+        if (!json_object_has_member (obj, "data")) {
+                g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                                     "TTS response missing 'data'");
+                return NULL;
+        }
+        JsonObject *dobj = json_object_get_object_member (obj, "data");
+        const char *audio_hex =
+                json_object_get_string_member_with_default (dobj, "audio", NULL);
+        if (!audio_hex || !*audio_hex) {
+                g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                                     "TTS response contained no audio");
+                return NULL;
+        }
+
+        GBytes *mp3 = hex_decode (audio_hex, strlen (audio_hex));
+        if (!mp3) {
+                g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                                     "Failed to hex-decode audio payload");
+                return NULL;
+        }
+        return mp3;
+}
+
+static void
+on_soup_done (GObject      *source,
+              GAsyncResult *result,
+              gpointer      user_data)
+{
+        SoupSession *session = SOUP_SESSION (source);
+        g_autoptr (GTask) task = G_TASK (user_data);
+        GError *error = NULL;
+
+        g_autoptr (GBytes) body =
+                soup_session_send_and_read_finish (session, result, &error);
+        if (!body) {
+                g_task_return_error (task, error);
+                return;
+        }
+
+        GBytes *mp3 = parse_response (body, &error);
+        if (!mp3) {
+                g_task_return_error (task, error);
+                return;
+        }
+
+        g_task_return_pointer (task, mp3, (GDestroyNotify) g_bytes_unref);
+}
+
+void
+ev_tts_minimax_synthesize_async (EvTtsMiniMax        *self,
+                                 const char          *text,
+                                 GCancellable        *cancellable,
+                                 GAsyncReadyCallback  callback,
+                                 gpointer             user_data)
+{
+        g_return_if_fail (EV_IS_TTS_MINIMAX (self));
+
+        GTask *task = g_task_new (self, cancellable, callback, user_data);
+
+        if (!ev_tts_minimax_is_configured (self)) {
+                g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_NOT_INITIALIZED,
+                                         "MiniMax TTS is not configured "
+                                         "(set API key, GroupId and voice in Settings)");
+                g_object_unref (task);
+                return;
+        }
+
+        g_autofree char *url =
+                g_strdup_printf ("https://%s/v1/t2a_v2?GroupId=%s",
+                                 self->host, self->group_id);
+
+        g_autoptr (SoupMessage) msg = soup_message_new ("POST", url);
+        if (!msg) {
+                g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_FAILED,
+                                         "Invalid TTS endpoint URL: %s", url);
+                g_object_unref (task);
+                return;
+        }
+
+        SoupMessageHeaders *headers = soup_message_get_request_headers (msg);
+        g_autofree char *bearer = g_strdup_printf ("Bearer %s", self->api_key);
+        soup_message_headers_append (headers, "Authorization", bearer);
+
+        gsize body_len = 0;
+        g_autofree char *body = build_request_body (self, text, &body_len);
+        g_autoptr (GBytes) body_bytes = g_bytes_new (body, body_len);
+        soup_message_set_request_body_from_bytes (msg, "application/json", body_bytes);
+
+        soup_session_send_and_read_async (self->session, msg, G_PRIORITY_DEFAULT,
+                                          cancellable, on_soup_done, task);
+}
+
+GBytes *
+ev_tts_minimax_synthesize_finish (EvTtsMiniMax  *self,
+                                  GAsyncResult  *result,
+                                  GError       **error)
+{
+        g_return_val_if_fail (g_task_is_valid (result, self), NULL);
+
+        return g_task_propagate_pointer (G_TASK (result), error);
+}
