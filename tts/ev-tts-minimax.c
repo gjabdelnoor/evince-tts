@@ -74,19 +74,21 @@ ev_tts_minimax_configure (EvTtsMiniMax *self,
 {
         g_return_if_fail (EV_IS_TTS_MINIMAX (self));
 
+        /* Strip whitespace: pasted keys often carry a trailing newline, which
+         * MiniMax rejects with "login fail". g_strstrip works in place. */
         if (host && *host) {
                 g_free (self->host);
-                self->host = g_strdup (host);
+                self->host = g_strstrip (g_strdup (host));
         }
         g_free (self->group_id);
-        self->group_id = g_strdup (group_id ? group_id : "");
+        self->group_id = g_strstrip (g_strdup (group_id ? group_id : ""));
         g_free (self->api_key);
-        self->api_key = g_strdup (api_key ? api_key : "");
+        self->api_key = g_strstrip (g_strdup (api_key ? api_key : ""));
         g_free (self->voice_id);
-        self->voice_id = g_strdup (voice_id ? voice_id : "");
+        self->voice_id = g_strstrip (g_strdup (voice_id ? voice_id : ""));
         if (model && *model) {
                 g_free (self->model);
-                self->model = g_strdup (model);
+                self->model = g_strstrip (g_strdup (model));
         }
         self->speed = speed > 0 ? speed : 1.0;
         self->vol   = vol   > 0 ? vol   : 1.0;
@@ -115,6 +117,8 @@ ev_tts_minimax_list_cloned_voices (const char  *host,
         g_autofree char *url = NULL;
         g_autofree char *bearer = NULL;
         g_autoptr (JsonParser) parser = NULL;
+        g_autofree char *clean_host = NULL;
+        g_autofree char *clean_key = NULL;
         const char *body_str = "{\"voice_type\":\"all\"}";
         GBytes *req_body;
         JsonObject *root_obj;
@@ -129,15 +133,19 @@ ev_tts_minimax_list_cloned_voices (const char  *host,
                 return NULL;
         }
 
+        /* Strip stray whitespace/newlines from pasted values. */
+        clean_host = g_strstrip (g_strdup (host));
+        clean_key  = g_strstrip (g_strdup (api_key));
+
         session = soup_session_new ();
-        url = g_strdup_printf ("https://%s/v1/get_voice", host);
+        url = g_strdup_printf ("https://%s/v1/get_voice", clean_host);
         msg = soup_message_new ("POST", url);
         if (!msg) {
                 g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
                              "Invalid URL: %s", url);
                 return NULL;
         }
-        bearer = g_strdup_printf ("Bearer %s", api_key);
+        bearer = g_strdup_printf ("Bearer %s", clean_key);
         soup_message_headers_append (soup_message_get_request_headers (msg),
                                      "Authorization", bearer);
         req_body = g_bytes_new_static (body_str, strlen (body_str));

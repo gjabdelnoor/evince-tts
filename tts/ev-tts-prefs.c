@@ -111,9 +111,11 @@ on_response (GtkDialog *dialog, int response, gpointer user_data)
                 g_settings_set_int (p->settings, "tts-pitch",
                                     gtk_spin_button_get_value_as_int (GTK_SPIN_BUTTON (p->pitch)));
 
-                if (key && *key)
-                        ev_keyring_save_password (TTS_KEYRING_URI, key,
+                if (key && *key) {
+                        g_autofree char *clean = g_strstrip (g_strdup (key));
+                        ev_keyring_save_password (TTS_KEYRING_URI, clean,
                                                   G_PASSWORD_SAVE_PERMANENTLY);
+                }
 
                 if (p->controller)
                         ev_tts_controller_reload_config (p->controller);
