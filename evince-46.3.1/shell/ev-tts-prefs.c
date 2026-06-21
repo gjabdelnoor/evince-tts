@@ -1,6 +1,7 @@
 /* ev-tts-prefs.c */
 
 #include "ev-tts-prefs.h"
+#include "ev-tts-minimax.h"
 #include "ev-keyring.h"
 
 #define TTS_KEYRING_URI "minimax-tts://default"
@@ -18,11 +19,12 @@ typedef struct {
         GtkWidget       *api_key;
         GtkWidget       *region;
         GtkWidget       *group_id;
-        GtkWidget       *voice_id;
+        GtkWidget       *voice_id;   /* GtkComboBoxText (with entry) */
         GtkWidget       *model;
         GtkWidget       *speed;
         GtkWidget       *vol;
         GtkWidget       *pitch;
+        GtkWidget       *status;
 } Prefs;
 
 static GtkWidget *
@@ -36,6 +38,56 @@ add_row (GtkGrid *grid, int row, const char *label, GtkWidget *w)
         return w;
 }
 
+static GtkEntry *
+voice_entry (Prefs *p)
+{
+        return GTK_ENTRY (gtk_bin_get_child (GTK_BIN (p->voice_id)));
+}
+
+static int
+current_region (Prefs *p)
+{
+        int idx = gtk_combo_box_get_active (GTK_COMBO_BOX (p->region));
+        return idx < 0 ? 0 : idx;
+}
+
+static void
+on_fetch_voices (GtkButton *button, gpointer user_data)
+{
+        Prefs *p = user_data;
+        const char *key = gtk_entry_get_text (GTK_ENTRY (p->api_key));
+        const char *host = regions[current_region (p)].host;
+        g_autofree char *keep = g_strdup (gtk_entry_get_text (voice_entry (p)));
+        GError *error = NULL;
+        char  **voices;
+        guint   n = 0;
+
+        gtk_label_set_text (GTK_LABEL (p->status), "Fetching voices…");
+
+        voices = ev_tts_minimax_list_cloned_voices (host, key, &error);
+        if (!voices) {
+                gtk_label_set_text (GTK_LABEL (p->status),
+                                    error ? error->message : "Failed to fetch voices.");
+                g_clear_error (&error);
+                return;
+        }
+
+        gtk_combo_box_text_remove_all (GTK_COMBO_BOX_TEXT (p->voice_id));
+        for (char **v = voices; *v; v++, n++)
+                gtk_combo_box_text_append_text (GTK_COMBO_BOX_TEXT (p->voice_id), *v);
+        gtk_entry_set_text (voice_entry (p), keep);   /* keep prior selection */
+        g_strfreev (voices);
+
+        if (n == 0)
+                gtk_label_set_text (GTK_LABEL (p->status),
+                                    "No cloned voices found on this account.");
+        else {
+                g_autofree char *msg =
+                        g_strdup_printf ("Found %u cloned voice%s.", n, n == 1 ? "" : "s");
+                gtk_label_set_text (GTK_LABEL (p->status), msg);
+        }
+}
+
 static void
 on_response (GtkDialog *dialog, int response, gpointer user_data)
 {
@@ -43,15 +95,13 @@ on_response (GtkDialog *dialog, int response, gpointer user_data)
 
         if (response == GTK_RESPONSE_OK) {
                 const char *key = gtk_entry_get_text (GTK_ENTRY (p->api_key));
-                int idx = gtk_combo_box_get_active (GTK_COMBO_BOX (p->region));
-                if (idx < 0)
-                        idx = 0;
 
-                g_settings_set_string (p->settings, "tts-host", regions[idx].host);
+                g_settings_set_string (p->settings, "tts-host",
+                                       regions[current_region (p)].host);
                 g_settings_set_string (p->settings, "tts-group-id",
                                        gtk_entry_get_text (GTK_ENTRY (p->group_id)));
                 g_settings_set_string (p->settings, "tts-voice-id",
-                                       gtk_entry_get_text (GTK_ENTRY (p->voice_id)));
+                                       gtk_entry_get_text (voice_entry (p)));
                 g_settings_set_string (p->settings, "tts-model",
                                        gtk_entry_get_text (GTK_ENTRY (p->model)));
                 g_settings_set_double (p->settings, "tts-speed",
@@ -78,7 +128,7 @@ void
 ev_tts_show_preferences (GtkWindow *parent, EvTtsController *controller)
 {
         Prefs     *p = g_new0 (Prefs, 1);
-        GtkWidget *dialog, *content, *grid;
+        GtkWidget *dialog, *content, *grid, *voice_box, *fetch;
         g_autofree char *host = NULL, *group = NULL, *voice = NULL, *model = NULL, *key = NULL;
         int row = 0;
 
@@ -122,11 +172,23 @@ ev_tts_show_preferences (GtkWindow *parent, EvTtsController *controller)
                 gtk_combo_box_set_active (GTK_COMBO_BOX (p->region), 0);
 
         p->group_id = add_row (GTK_GRID (grid), row++, "GroupId:", gtk_entry_new ());
+        gtk_entry_set_placeholder_text (GTK_ENTRY (p->group_id),
+                                        "optional (not needed for api.minimax.io)");
         gtk_entry_set_text (GTK_ENTRY (p->group_id), group ? group : "");
 
-        p->voice_id = add_row (GTK_GRID (grid), row++, "Voice ID:", gtk_entry_new ());
-        gtk_entry_set_placeholder_text (GTK_ENTRY (p->voice_id), "your cloned voice id");
-        gtk_entry_set_text (GTK_ENTRY (p->voice_id), voice ? voice : "");
+        /* Voice ID: editable combo + a button to fetch cloned voices live. */
+        voice_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+        p->voice_id = gtk_combo_box_text_new_with_entry ();
+        gtk_entry_set_placeholder_text (voice_entry (p), "cloned voice id");
+        if (voice && *voice) {
+                gtk_combo_box_text_append_text (GTK_COMBO_BOX_TEXT (p->voice_id), voice);
+                gtk_entry_set_text (voice_entry (p), voice);
+        }
+        fetch = gtk_button_new_with_label ("Fetch voices");
+        g_signal_connect (fetch, "clicked", G_CALLBACK (on_fetch_voices), p);
+        gtk_box_pack_start (GTK_BOX (voice_box), p->voice_id, TRUE, TRUE, 0);
+        gtk_box_pack_start (GTK_BOX (voice_box), fetch, FALSE, FALSE, 0);
+        add_row (GTK_GRID (grid), row++, "Voice ID:", voice_box);
 
         p->model = add_row (GTK_GRID (grid), row++, "Model:", gtk_entry_new ());
         gtk_entry_set_text (GTK_ENTRY (p->model), (model && *model) ? model : "speech-2.6-hd");
@@ -145,6 +207,11 @@ ev_tts_show_preferences (GtkWindow *parent, EvTtsController *controller)
                             gtk_spin_button_new_with_range (-12, 12, 1));
         gtk_spin_button_set_value (GTK_SPIN_BUTTON (p->pitch),
                                    g_settings_get_int (p->settings, "tts-pitch"));
+
+        p->status = gtk_label_new (NULL);
+        gtk_widget_set_halign (p->status, GTK_ALIGN_START);
+        gtk_label_set_xalign (GTK_LABEL (p->status), 0.0);
+        gtk_grid_attach (GTK_GRID (grid), p->status, 0, row++, 2, 1);
 
         g_signal_connect (dialog, "response", G_CALLBACK (on_response), p);
         gtk_widget_show_all (dialog);

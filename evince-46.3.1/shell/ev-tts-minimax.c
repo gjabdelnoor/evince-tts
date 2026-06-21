@@ -98,10 +98,87 @@ ev_tts_minimax_is_configured (EvTtsMiniMax *self)
 {
         g_return_val_if_fail (EV_IS_TTS_MINIMAX (self), FALSE);
 
+        /* GroupId is optional on api.minimax.io (Bearer key is sufficient). */
         return self->host && *self->host &&
-               self->group_id && *self->group_id &&
                self->api_key && *self->api_key &&
                self->voice_id && *self->voice_id;
+}
+
+char **
+ev_tts_minimax_list_cloned_voices (const char  *host,
+                                   const char  *api_key,
+                                   GError     **error)
+{
+        g_autoptr (SoupSession) session = NULL;
+        g_autoptr (SoupMessage) msg = NULL;
+        g_autoptr (GBytes) resp = NULL;
+        g_autofree char *url = NULL;
+        g_autofree char *bearer = NULL;
+        g_autoptr (JsonParser) parser = NULL;
+        const char *body_str = "{\"voice_type\":\"all\"}";
+        GBytes *req_body;
+        JsonObject *root_obj;
+        JsonArray  *cloning;
+        GPtrArray  *ids;
+        gsize size = 0;
+        const char *data;
+
+        if (!host || !*host || !api_key || !*api_key) {
+                g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_INITIALIZED,
+                                     "Enter an API key (and region) first.");
+                return NULL;
+        }
+
+        session = soup_session_new ();
+        url = g_strdup_printf ("https://%s/v1/get_voice", host);
+        msg = soup_message_new ("POST", url);
+        if (!msg) {
+                g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                             "Invalid URL: %s", url);
+                return NULL;
+        }
+        bearer = g_strdup_printf ("Bearer %s", api_key);
+        soup_message_headers_append (soup_message_get_request_headers (msg),
+                                     "Authorization", bearer);
+        req_body = g_bytes_new_static (body_str, strlen (body_str));
+        soup_message_set_request_body_from_bytes (msg, "application/json", req_body);
+        g_bytes_unref (req_body);
+
+        resp = soup_session_send_and_read (session, msg, NULL, error);
+        if (!resp)
+                return NULL;
+
+        parser = json_parser_new ();
+        data = g_bytes_get_data (resp, &size);
+        if (!json_parser_load_from_data (parser, data, size, error))
+                return NULL;
+
+        root_obj = json_node_get_object (json_parser_get_root (parser));
+        if (!root_obj || !json_object_has_member (root_obj, "voice_cloning")) {
+                /* surface base_resp message if present */
+                if (root_obj && json_object_has_member (root_obj, "base_resp")) {
+                        JsonObject *b = json_object_get_object_member (root_obj, "base_resp");
+                        g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED, "%s",
+                                     json_object_get_string_member_with_default (
+                                             b, "status_msg", "no cloned voices"));
+                } else {
+                        g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                                             "Unexpected get_voice response");
+                }
+                return NULL;
+        }
+
+        cloning = json_object_get_array_member (root_obj, "voice_cloning");
+        ids = g_ptr_array_new ();
+        for (guint i = 0; cloning && i < json_array_get_length (cloning); i++) {
+                JsonObject *v = json_array_get_object_element (cloning, i);
+                const char *id = json_object_get_string_member_with_default (v, "voice_id", NULL);
+                if (id && *id)
+                        g_ptr_array_add (ids, g_strdup (id));
+        }
+        g_ptr_array_add (ids, NULL);
+
+        return (char **) g_ptr_array_free (ids, FALSE);
 }
 
 /* Decode a hex string into raw bytes. Returns NULL on malformed input. */
@@ -283,8 +360,10 @@ ev_tts_minimax_synthesize_async (EvTtsMiniMax        *self,
         }
 
         g_autofree char *url =
-                g_strdup_printf ("https://%s/v1/t2a_v2?GroupId=%s",
-                                 self->host, self->group_id);
+                (self->group_id && *self->group_id)
+                        ? g_strdup_printf ("https://%s/v1/t2a_v2?GroupId=%s",
+                                           self->host, self->group_id)
+                        : g_strdup_printf ("https://%s/v1/t2a_v2", self->host);
 
         g_autoptr (SoupMessage) msg = soup_message_new ("POST", url);
         if (!msg) {

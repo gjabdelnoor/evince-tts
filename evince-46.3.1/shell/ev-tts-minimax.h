@@ -29,8 +29,15 @@ void ev_tts_minimax_configure (EvTtsMiniMax *self,
                                double        vol,
                                int           pitch);
 
-/* TRUE once host/group_id/api_key/voice_id are all non-empty. */
+/* TRUE once host/api_key/voice_id are all non-empty (GroupId is optional). */
 gboolean ev_tts_minimax_is_configured (EvTtsMiniMax *self);
+
+/* Synchronously fetch the account's cloned voice ids (get_voice ->
+ * voice_cloning[].voice_id). Returns a NULL-terminated array (free with
+ * g_strfreev), or NULL + error. Intended for the settings dialog. */
+char **ev_tts_minimax_list_cloned_voices (const char  *host,
+                                          const char  *api_key,
+                                          GError     **error);
 
 /* Synthesize a single chunk of text (keep under MiniMax's 10k char cap).
  * Completes with a GBytes of MP3 audio, or NULL + error. */
