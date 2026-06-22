@@ -91,6 +91,7 @@
 #include "ev-recent-view.h"
 #include "ev-search-box.h"
 #include "ev-tts-controller.h"
+#include "ev-tts-bar.h"
 #include "ev-tts-prefs.h"
 
 #ifdef ENABLE_DBUS
@@ -7763,6 +7764,15 @@ ev_window_init (EvWindow *ev_window)
 				  G_CALLBACK (ev_window_tts_status_cb), ev_window);
 	g_signal_connect_swapped (priv->tts_controller, "notify::active",
 				  G_CALLBACK (ev_window_tts_active_cb), ev_window);
+
+	/* Media-player control strip in the header bar (right of the title). */
+	{
+		GtkWidget    *tts_bar = ev_tts_bar_new (priv->tts_controller);
+		HdyHeaderBar *header_bar =
+			ev_toolbar_get_header_bar (EV_TOOLBAR (priv->toolbar));
+		hdy_header_bar_pack_end (header_bar, tts_bar);
+		gtk_widget_show_all (tts_bar);
+	}
 
 	priv->password_view_cancelled = FALSE;
 	priv->password_view = ev_password_view_new (GTK_WINDOW (ev_window));

@@ -19,6 +19,7 @@ evince_sources = files(
   'ev-toolbar.c',
   'ev-tts-minimax.c',
   'ev-tts-controller.c',
+  'ev-tts-bar.c',
   'ev-tts-prefs.c',
   'ev-utils.c',
   'ev-window.c',

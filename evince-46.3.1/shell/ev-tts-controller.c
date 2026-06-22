@@ -45,6 +45,7 @@ struct _EvTtsController {
 
         gboolean         active;
         gboolean         paused;
+        double           volume;        /* playback volume 0..1 */
 };
 
 enum {
@@ -291,7 +292,7 @@ play_sentence (EvTtsController *self, Sentence *s)
 
         uri = g_filename_to_uri (s->tmpfile, NULL, NULL);
         gst_element_set_state (self->playbin, GST_STATE_READY);
-        g_object_set (self->playbin, "uri", uri, NULL);
+        g_object_set (self->playbin, "uri", uri, "volume", self->volume, NULL);
         gst_element_set_state (self->playbin,
                                self->paused ? GST_STATE_PAUSED : GST_STATE_PLAYING);
 
@@ -550,6 +551,109 @@ ev_tts_controller_get_paused (EvTtsController *self)
         return self->paused;
 }
 
+void
+ev_tts_controller_set_volume (EvTtsController *self, double volume)
+{
+        g_return_if_fail (EV_IS_TTS_CONTROLLER (self));
+        self->volume = CLAMP (volume, 0.0, 1.0);
+        if (self->playbin)
+                g_object_set (self->playbin, "volume", self->volume, NULL);
+}
+
+double
+ev_tts_controller_get_volume (EvTtsController *self)
+{
+        g_return_val_if_fail (EV_IS_TTS_CONTROLLER (self), 1.0);
+        return self->volume;
+}
+
+/* Jump to a page: if reading, restart the loop there; otherwise just navigate. */
+static void
+controller_jump_to_page (EvTtsController *self, gint page)
+{
+        EvDocument *doc = ev_document_model_get_document (self->model);
+        gint n_pages = doc ? ev_document_get_n_pages (doc) : 0;
+
+        if (page < 0 || page >= n_pages)
+                return;
+
+        if (!self->active) {
+                ev_document_model_set_page (self->model, page);
+                return;
+        }
+
+        /* Cancel in-flight synth so stale callbacks don't touch the new page. */
+        if (self->cancellable) {
+                g_cancellable_cancel (self->cancellable);
+                g_clear_object (&self->cancellable);
+        }
+        self->cancellable = g_cancellable_new ();
+        if (self->playbin)
+                gst_element_set_state (self->playbin, GST_STATE_NULL);
+
+        ev_document_model_set_page (self->model, page);
+        self->page = page;
+        if (build_sentences_for_page (self, page)) {
+                self->cur = 0;
+                ev_tts_controller_ensure_playing (self);
+        } else {
+                start_next_page (self);
+        }
+}
+
+void
+ev_tts_controller_next_page (EvTtsController *self)
+{
+        g_return_if_fail (EV_IS_TTS_CONTROLLER (self));
+        controller_jump_to_page (self, ev_document_model_get_page (self->model) + 1);
+}
+
+void
+ev_tts_controller_prev_page (EvTtsController *self)
+{
+        g_return_if_fail (EV_IS_TTS_CONTROLLER (self));
+        controller_jump_to_page (self, ev_document_model_get_page (self->model) - 1);
+}
+
+/* Current clip position/duration in nanoseconds. */
+gboolean
+ev_tts_controller_get_progress (EvTtsController *self,
+                                gint64          *pos_ns,
+                                gint64          *dur_ns)
+{
+        gint64 pos = 0, dur = 0;
+
+        g_return_val_if_fail (EV_IS_TTS_CONTROLLER (self), FALSE);
+        if (!self->playbin || !self->active)
+                return FALSE;
+        if (!gst_element_query_position (self->playbin, GST_FORMAT_TIME, &pos))
+                return FALSE;
+        if (!gst_element_query_duration (self->playbin, GST_FORMAT_TIME, &dur))
+                return FALSE;
+        if (dur <= 0)
+                return FALSE;
+        if (pos_ns) *pos_ns = pos;
+        if (dur_ns) *dur_ns = dur;
+        return TRUE;
+}
+
+/* Seek within the current clip to fraction [0..1]. */
+void
+ev_tts_controller_seek_fraction (EvTtsController *self, double fraction)
+{
+        gint64 dur = 0;
+
+        g_return_if_fail (EV_IS_TTS_CONTROLLER (self));
+        if (!self->playbin || !self->active)
+                return;
+        if (!gst_element_query_duration (self->playbin, GST_FORMAT_TIME, &dur) || dur <= 0)
+                return;
+
+        gst_element_seek_simple (self->playbin, GST_FORMAT_TIME,
+                                 GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT,
+                                 (gint64) (CLAMP (fraction, 0.0, 1.0) * dur));
+}
+
 /* --- GObject boilerplate --- */
 
 static void
@@ -618,6 +722,7 @@ ev_tts_controller_init (EvTtsController *self)
         if (!gst_is_initialized ())
                 gst_init (NULL, NULL);
 
+        self->volume   = 1.0;
         self->backend  = ev_tts_minimax_new ();
         self->settings = g_settings_new (TTS_SCHEMA);
         self->playbin  = gst_element_factory_make ("playbin", "ev-tts-playbin");

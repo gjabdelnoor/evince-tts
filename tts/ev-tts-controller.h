@@ -29,6 +29,15 @@ gboolean ev_tts_controller_is_active (EvTtsController *self);
 void     ev_tts_controller_set_paused (EvTtsController *self, gboolean paused);
 gboolean ev_tts_controller_get_paused (EvTtsController *self);
 
+/* Media-player controls. */
+void     ev_tts_controller_next_page (EvTtsController *self);
+void     ev_tts_controller_prev_page (EvTtsController *self);
+void     ev_tts_controller_set_volume (EvTtsController *self, double volume); /* 0..1 */
+double   ev_tts_controller_get_volume (EvTtsController *self);
+gboolean ev_tts_controller_get_progress (EvTtsController *self,
+                                         gint64 *pos_ns, gint64 *dur_ns);
+void     ev_tts_controller_seek_fraction (EvTtsController *self, double fraction);
+
 /* Re-read credentials/voice parameters from GSettings + keyring. */
 void     ev_tts_controller_reload_config (EvTtsController *self);
 
