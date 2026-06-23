@@ -10,12 +10,19 @@ TOOLS="$HERE/dist/tools"
 APPDIR="$HERE/dist/AppDir"
 mkdir -p "$TOOLS" "$HERE/dist"
 
+# AppImage tools self-mount via FUSE; fall back to extract-and-run in sandboxes.
+export APPIMAGE_EXTRACT_AND_RUN=1
+
 fetch() {  # url dest
-        [ -f "$2" ] || { echo "fetching $(basename "$2")"; wget -q -O "$2" "$1"; chmod +x "$2"; }
+        if [ ! -s "$2" ]; then
+                echo "fetching $(basename "$2")"
+                curl -fsSL --retry 3 -o "$2" "$1" || { echo "download failed: $1" >&2; exit 1; }
+        fi
+        chmod +x "$2"
 }
 B=https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous
-G=https://github.com/linuxdeploy/linuxdeploy-plugin-gtk/releases/download/continuous
-A=https://github.com/AppImage/AppImageKit/releases/download/continuous
+G=https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/master
+A=https://github.com/AppImage/appimagetool/releases/download/continuous
 fetch "$B/linuxdeploy-x86_64.AppImage"            "$TOOLS/linuxdeploy.AppImage"
 fetch "$G/linuxdeploy-plugin-gtk.sh"              "$TOOLS/linuxdeploy-plugin-gtk.sh"
 fetch "$A/appimagetool-x86_64.AppImage"           "$TOOLS/appimagetool.AppImage"
