@@ -58,6 +58,15 @@ struct _EvTtsController {
         gboolean         active;
         gboolean         paused;
         double           volume;        /* playback volume 0..1 */
+
+        /* Batch precache (env EV_TTS_PRECACHE), sequential + throttled. */
+        gboolean         precaching;
+        gint             precache_last; /* last page index, inclusive */
+        gint             precache_page;
+        guint            precache_idx;
+        guint            precache_retry;
+        guint            precache_synth; /* synthesized this run */
+        guint            precache_hit;   /* already-cached, skipped */
 };
 
 /* Per-request context so each synth result lands on the right page+sentence. */
@@ -715,8 +724,8 @@ static void
 on_model_page_changed (EvDocumentModel *model, gint old, gint new_page,
                        EvTtsController *self)
 {
-        if (self->active)
-                return;   /* active playback drives its own prefetch */
+        if (self->active || self->precaching)
+                return;   /* active playback / batch precache drive their own work */
         if (self->dwell_id)
                 g_source_remove (self->dwell_id);
         self->dwell_id = g_timeout_add (DWELL_MS, dwell_fire, self);
@@ -869,6 +878,198 @@ ev_tts_controller_refresh_voices (EvTtsController *self)
 
         ev_tts_backend_list_voices_async (provider, endpoint, key, self->cancellable,
                                           on_voices_ready, g_object_ref (self));
+}
+
+/* ---- batch precache (env EV_TTS_PRECACHE="N" or "FIRST-LAST", 1-based pages) ----
+ * Sequential + throttled so we don't trip the provider's rate limit, and it uses
+ * the exact same extract/cache-key path as playback so the clips are reused. */
+
+#define PRECACHE_THROTTLE_MS 120
+#define PRECACHE_RETRY_MS    1500
+#define PRECACHE_MAX_RETRY   3
+
+static void precache_step (EvTtsController *self);
+
+/* Continue the run on the main loop; owns one ref to self. */
+static gboolean
+precache_kick_cb (gpointer data)
+{
+        EvTtsController *self = data;
+        precache_step (self);
+        g_object_unref (self);
+        return G_SOURCE_REMOVE;
+}
+
+static void
+precache_continue (EvTtsController *self, guint delay_ms)
+{
+        g_timeout_add (delay_ms, precache_kick_cb, g_object_ref (self));
+}
+
+static void
+precache_finish (EvTtsController *self)
+{
+        GApplication *app = g_application_get_default ();
+
+        self->precaching = FALSE;
+        g_printerr ("[precache] complete: %u synthesized, %u already cached "
+                    "(pages 1-%d)\n",
+                    self->precache_synth, self->precache_hit, self->precache_last + 1);
+        emit_status (self, "Pre-cache complete: %u clips synthesized, %u reused.",
+                     self->precache_synth, self->precache_hit);
+        if (app)
+                g_application_quit (app);
+}
+
+static void
+on_precache_synth (GObject *source, GAsyncResult *res, gpointer data)
+{
+        EvTtsController *self = data;          /* owns a ref */
+        GError *error = NULL;
+        GBytes *mp3 = ev_tts_backend_synthesize_finish (EV_TTS_BACKEND (source), res, &error);
+
+        if (!mp3) {
+                if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
+                        self->precaching = FALSE;
+                        g_clear_error (&error);
+                        g_object_unref (self);
+                        return;
+                }
+                if (self->precache_retry < PRECACHE_MAX_RETRY) {
+                        self->precache_retry++;
+                        g_printerr ("[precache] page %d sentence %u retry %u: %s\n",
+                                    self->precache_page + 1, self->precache_idx + 1,
+                                    self->precache_retry, error ? error->message : "?");
+                        g_clear_error (&error);
+                        precache_continue (self, PRECACHE_RETRY_MS);
+                        g_object_unref (self);
+                        return;
+                }
+                g_printerr ("[precache] page %d sentence %u gave up: %s\n",
+                            self->precache_page + 1, self->precache_idx + 1,
+                            error ? error->message : "?");
+                g_clear_error (&error);
+                self->precache_idx++;     /* skip this one */
+                self->precache_retry = 0;
+                precache_continue (self, PRECACHE_THROTTLE_MS);
+                g_object_unref (self);
+                return;
+        }
+
+        {
+                Sentence *s = sentence_at (self, self->precache_page, self->precache_idx);
+                if (s)
+                        cache_store (self, self->precache_page, s, mp3);
+                g_bytes_unref (mp3);
+        }
+        self->precache_synth++;
+        self->precache_idx++;
+        self->precache_retry = 0;
+        precache_continue (self, PRECACHE_THROTTLE_MS);
+        g_object_unref (self);
+}
+
+static void
+precache_step (EvTtsController *self)
+{
+        if (!self->precaching)
+                return;
+
+        while (TRUE) {
+                PageCache *pc;
+                Sentence  *s;
+
+                if (self->precache_page > self->precache_last) {
+                        precache_finish (self);
+                        return;
+                }
+
+                pc = page_get (self, self->precache_page, TRUE);
+                if (!pc) {       /* out of range / no document */
+                        precache_finish (self);
+                        return;
+                }
+
+                if (self->precache_idx >= pc->sentences->len) {
+                        /* page done — drop it to keep memory flat, advance */
+                        g_hash_table_remove (self->pages,
+                                             GINT_TO_POINTER (self->precache_page));
+                        self->precache_page++;
+                        self->precache_idx = 0;
+                        self->precache_retry = 0;
+                        continue;
+                }
+
+                s = g_ptr_array_index (pc->sentences, self->precache_idx);
+                if (!s->text || !*s->text || s->audio || s->file) {
+                        if (s->audio || s->file)
+                                self->precache_hit++;   /* already cached on disk */
+                        self->precache_idx++;
+                        continue;
+                }
+
+                g_printerr ("[precache] page %d/%d sentence %u  (%u synthesized, %u cached)\n",
+                            self->precache_page + 1, self->precache_last + 1,
+                            self->precache_idx + 1, self->precache_synth, self->precache_hit);
+                ev_tts_backend_synthesize_async (self->backend, s->text, self->cancellable,
+                                                 on_precache_synth, g_object_ref (self));
+                return;   /* resume in the callback */
+        }
+}
+
+static void
+ev_tts_controller_maybe_precache (EvTtsController *self)
+{
+        const char *spec = g_getenv ("EV_TTS_PRECACHE");
+        EvDocument *doc;
+        gint first = 0, last = 0, n_pages, a = 0, b = 0;
+
+        if (!spec || !*spec || self->precaching)
+                return;
+        doc = ev_document_model_get_document (self->model);
+        if (!doc || !EV_IS_DOCUMENT_TEXT (doc))
+                return;
+        n_pages = ev_document_get_n_pages (doc);
+        if (n_pages <= 0)
+                return;
+
+        if (sscanf (spec, "%d-%d", &a, &b) == 2) {        /* "FIRST-LAST" (1-based) */
+                first = a - 1;
+                last  = b - 1;
+        } else if (sscanf (spec, "%d", &b) == 1) {        /* "N" -> first N pages */
+                first = 0;
+                last  = b - 1;
+        } else {
+                return;
+        }
+        first = CLAMP (first, 0, n_pages - 1);
+        last  = CLAMP (last, first, n_pages - 1);
+
+        ev_tts_controller_reload_config (self);
+        if (!ev_tts_backend_is_configured (self->backend)) {
+                GApplication *app = g_application_get_default ();
+                g_printerr ("[precache] aborted: TTS provider not configured.\n");
+                if (app)
+                        g_application_quit (app);
+                return;
+        }
+
+        self->precaching     = TRUE;
+        self->precache_page  = first;
+        self->precache_last  = last;
+        self->precache_idx   = 0;
+        self->precache_retry = 0;
+        self->precache_synth = 0;
+        self->precache_hit   = 0;
+        g_printerr ("[precache] starting: pages %d-%d (%d pages)\n",
+                    first + 1, last + 1, last - first + 1);
+        precache_step (self);
+}
+
+static void
+on_document_notify (GObject *obj, GParamSpec *pspec, EvTtsController *self)
+{
+        ev_tts_controller_maybe_precache (self);
 }
 
 void
@@ -1161,5 +1362,8 @@ ev_tts_controller_new (EvView *view, EvDocumentModel *model)
         self->model = g_object_ref (model);
         g_signal_connect (self->model, "page-changed",
                           G_CALLBACK (on_model_page_changed), self);
+        g_signal_connect (self->model, "notify::document",
+                          G_CALLBACK (on_document_notify), self);
+        ev_tts_controller_maybe_precache (self);   /* in case the doc is already set */
         return self;
 }

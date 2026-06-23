@@ -45,6 +45,10 @@ re-synthesizes work you've already paid for.
   keys page the reader (Previous/Rewind → back, Next/FastForward → forward).
 - **Debug console** (menu → *TTS Debug Console*) — a small scrolling window that
   logs every API call in curl form.
+- **Batch pre-cache** — `EV_TTS_PRECACHE="50" evince book.pdf` synthesizes and
+  caches the first 50 pages (or `"10-60"` for a range), sequentially and
+  throttled, then quits. Uses the exact same cache keys as playback, so the
+  reader reuses every clip. Resumable: already-cached sentences are skipped.
 - Credentials in the GNOME keyring; everything else in GSettings. GroupId is
   optional on `api.minimax.io`.
 
