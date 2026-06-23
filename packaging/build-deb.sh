@@ -16,7 +16,7 @@ fi
 
 rm -rf "$STAGE"
 mkdir -p "$STAGE" "$HERE/dist"
-DESTDIR="$STAGE" ninja -C "$SRC/build" install >/dev/null
+meson install -C "$SRC/build" --destdir "$STAGE" --no-rebuild >/dev/null
 
 INSTALLED_KB=$(du -sk "$STAGE" | cut -f1)
 
