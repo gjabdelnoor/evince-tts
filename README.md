@@ -1,26 +1,34 @@
-# Evince TTS — "Read Aloud" with MiniMax custom voice
+# Evince TTS — Read PDFs aloud in a custom MiniMax voice
 
-A fork of Ubuntu's stock **Document Viewer (Evince 46.3.1)** that adds a
+A fork of Ubuntu's stock **Document Viewer (GNOME Evince 46.3.1)** that adds a
 **Read Aloud** feature: it pulls each page's text layer (via Evince's existing
 Poppler extraction), synthesizes it sentence-by-sentence with the **MiniMax
-T2A V2** API using your **custom cloned voice**, plays it with GStreamer, and
-highlights the sentence currently being spoken — auto-advancing through pages.
+T2A V2** API in your **custom cloned voice**, plays it with GStreamer, and
+highlights the sentence being spoken — auto-advancing through the document.
 
-## What was added (on top of stock evince 46.3.1)
+> This is a community fork for personal/educational use. Evince is GPLv2+;
+> these additions inherit that license. Not affiliated with GNOME or MiniMax.
 
-| File | Purpose |
-|------|---------|
-| `shell/ev-tts-minimax.{c,h}` | Async HTTPS POST to MiniMax `t2a_v2` (libsoup-3.0 + json-glib); hex→MP3 decode |
-| `shell/ev-tts-controller.{c,h}` | Read loop: sentence split, synth queue/prefetch, GStreamer playback, page advance, highlight dispatch |
-| `shell/ev-tts-prefs.{c,h}` | Settings dialog (API key, region, GroupId, voice id, model, speed/vol/pitch) |
-| `libview/ev-view.c` (+ private/header) | `ev_view_set_tts_highlight()` — draws the active-sentence overlay, reusing the find-highlight path |
-| `shell/ev-window.c` | `win.read-aloud` toggle + `win.tts-preferences` actions, controller lifecycle, status info-bar |
-| `shell/evince-toolbar.ui` | "Read Aloud" + "TTS Settings…" items in the primary menu |
-| `data/org.gnome.Evince.gschema.xml` | `tts-*` settings keys |
-| `meson.build`, `shell/meson.build` | libsoup-3.0 + json-glib deps, new sources |
+## Features
 
-The **API key** is stored in the GNOME keyring (via Evince's existing
-`ev-keyring`), never in a file. Everything else lives in GSettings.
+- **Read Aloud** with sentence highlighting and automatic page advance.
+- **Media bar** in the header: voice selector, **HD/Turbo** model toggle, speed
+  dial, previous/next page, play-pause, a seek scrubber, and volume.
+- **Persistent on-disk cache** — every clip is cached under
+  `~/.cache/evince-tts/<doc-sha>/<voice>_<model>_s<speed>_p<pitch>/page-NNNN/`
+  with a `page.json` (text + ordering) per page. Reopening a document reuses the
+  audio instead of re-hitting the API; nothing is re-synthesized. The folder
+  layout is designed so a script can later stitch the clips into an audiobook.
+- **Idle pre-generation** — dwell on a page for 5 s and its window is
+  synthesized in the background so playback starts instantly.
+- **Sliding window** — the current page ±2 are kept warm; pages outside are
+  evicted from memory (the on-disk cache stays).
+- **Media keys / Bluetooth headphones** via MPRIS: play-pause, and the transport
+  keys page the reader (Previous/Rewind → back, Next/FastForward → forward).
+- **Debug console** (menu → *TTS Debug Console*) — a small scrolling window that
+  logs every API call in curl form.
+- Credentials in the GNOME keyring; everything else in GSettings. GroupId is
+  optional on `api.minimax.io`.
 
 ## Build
 
@@ -33,22 +41,38 @@ meson setup build
 ninja -C build
 ```
 
-## Run
+## Run (uninstalled)
 
 ```bash
-./run.sh ~/some.pdf        # wraps `meson devenv` so the uninstalled build works
+./run.sh ~/some.pdf      # wraps `meson devenv` so the build tree works
 ```
 
-Then: primary menu → **TTS Settings…** → enter your MiniMax **API key**,
-**GroupId**, **Voice ID**, pick the **region**, Save. Open a text PDF and choose
-**Read Aloud** (or toggle it from the menu).
+## Install
 
-> Note: requires MP3 decoding — `gstreamer1.0-plugins-good`/`-libav`.
+```bash
+sudo ninja -C build install     # installs to /usr/local (shadows apt's evince)
+```
 
-## Status / limitations
+Then open any PDF, go to **☰ → TTS Settings**, paste your MiniMax **API key**,
+click **Fetch voices**, pick your cloned voice, **Save**, and choose
+**☰ → Read Aloud**.
 
-- Built & launches cleanly against Ubuntu 24.04's evince 46.3.1.
-- End-to-end voice playback needs your MiniMax **GroupId** + cloned **voice_id**
-  (entered in TTS Settings) — not yet exercised here.
-- Scanned/image-only pages (no text layer) are skipped (no OCR).
-- Highlight uses per-sentence boundaries; no word-level karaoke timing.
+## Packages
+
+`packaging/build-deb.sh` builds a self-contained `.deb` (installs under
+`/opt/evince-tts`, no conflict with the system `evince`).
+`packaging/build-appimage.sh` builds an AppImage. See `packaging/README.md`.
+
+## Layout of the TTS code (all under `evince-46.3.1/shell/`)
+
+| File | Purpose |
+|------|---------|
+| `ev-tts-minimax.{c,h}` | MiniMax T2A V2 client (libsoup + json-glib), hex→mp3, voice list, `log` signal |
+| `ev-tts-controller.{c,h}` | read loop, per-page sliding + on-disk cache, idle pre-gen, voice/speed/model |
+| `ev-tts-bar.{c,h}` | header-bar media + voice/speed/model controls |
+| `ev-tts-prefs.{c,h}` | settings dialog (key, region, voice, model, speed…) |
+| `ev-tts-debug.{c,h}` | API-call console |
+| `ev-tts-mpris.{c,h}` | MPRIS2 player for media keys |
+
+Plus `ev_view_set_tts_highlight()` in `libview/ev-view.c` and the wiring in
+`shell/ev-window.c`.

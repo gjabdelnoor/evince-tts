@@ -1,0 +1,163 @@
+Source: evince
+Section: gnome
+Priority: optional
+Maintainer: Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>
+XSBC-Original-Maintainer: Debian GNOME Maintainers <pkg-gnome-maintainers@lists.alioth.debian.org>
+Uploaders: Amin Bandali <bandali@ubuntu.com>, Jeremy Bícha <jbicha@ubuntu.com>, Laurent Bigonville <bigon@debian.org>, Marco Trevisan (Treviño) <marco@ubuntu.com>
+Build-Depends: debhelper-compat (= 13),
+               desktop-file-utils,
+               dh-apparmor,
+               dh-sequence-gir,
+               dh-sequence-gnome (>= 0.22),
+               dpkg-dev (>= 1.16.1),
+               gobject-introspection (>= 1.0),
+               gsettings-desktop-schemas-dev,
+               gi-docgen (>= 2021.1),
+               itstool,
+               libarchive-dev (>= 3.6.0),
+               libcairo2-dev (>= 1.10.0),
+               libdjvulibre-dev (>= 3.5.22),
+               libgail-3-dev (>= 3.0.2),
+               libgdk-pixbuf-2.0-dev (>= 2.40),
+               libgdk-pixbuf2.0-doc,
+               libgirepository1.0-dev (>= 1.0),
+               libglib2.0-dev (>= 2.38),
+               libglib2.0-doc,
+               libgnome-desktop-3-dev,
+               libgspell-1-dev (>= 1.6.0),
+               libgstreamer-plugins-base1.0-dev,
+               libgstreamer1.0-dev,
+               libgtk-3-dev (>= 3.22.0),
+               libgtk-3-doc,
+               libgxps-dev (>= 0.2.1),
+               libhandy-1-dev (>= 1.5.90),
+               libkpathsea-dev,
+               libpango1.0-doc,
+               libpoppler-glib-dev (>= 22.05),
+               libsecret-1-dev (>= 0.5),
+               libsm-dev (>= 2:1.0.0),
+               libspectre-dev (>= 0.2.0),
+               libsynctex-dev,
+               libtiff-dev (>= 4),
+               libx11-dev,
+               libxml2-dev (>= 2.5.0),
+               meson (>= 0.59.0),
+               zlib1g-dev
+Rules-Requires-Root: no
+Standards-Version: 4.6.2
+Vcs-Browser: https://salsa.debian.org/gnome-team/evince
+Vcs-Git: https://salsa.debian.org/gnome-team/evince.git
+Homepage: https://apps.gnome.org/Evince/
+
+Package: evince
+Architecture: any
+Depends: evince-common (>= ${source:Version}),
+         gsettings-desktop-schemas,
+         libevdocument3-4t64 (= ${binary:Version}),
+         libevview3-3t64 (= ${binary:Version}),
+         shared-mime-info,
+         ${misc:Depends},
+         ${shlibs:Depends}
+Recommends: default-dbus-session-bus | dbus-session-bus
+Provides: djvu-viewer,
+          pdf-viewer,
+          postscript-viewer
+Suggests: gvfs,
+          nautilus-sendto,
+          poppler-data,
+          unrar
+Breaks: libevdocument3-4t64 (<< 3.29.91-2~)
+Replaces: libevdocument3-4t64 (<< 3.29.91-2~)
+Enhances: nautilus
+Description: Document (PostScript, PDF) viewer
+ Evince is a simple multi-page document viewer.  It can display and print
+ PostScript (PS), Encapsulated PostScript (EPS), DjVu, DVI, Portable
+ Document Format (PDF) and XML Paper Specification (XPS) files.
+ When supported by the document, it also allows searching for text,
+ copying text to the clipboard, hypertext navigation, and
+ table-of-contents bookmarks.
+
+Package: evince-common
+Architecture: all
+Depends: ${misc:Depends}
+Description: Document (PostScript, PDF) viewer - common files
+ Evince is a simple multi-page document viewer.  It can display and print
+ PostScript (PS), Encapsulated PostScript (EPS), DjVu, DVI, Portable
+ Document Format (PDF) and XML Paper Specification (XPS) files.
+ When supported by the document, it also allows searching for text,
+ copying text to the clipboard, hypertext navigation, and
+ table-of-contents bookmarks.
+ .
+ This package contains architecture-independent files for evince.
+
+Package: libevdocument3-4t64
+Provides: ${t64:Provides}
+Replaces: libevdocument3-4
+Breaks: libevdocument3-4 (<< ${source:Version})
+Architecture: any
+Multi-Arch: same
+Section: libs
+Depends: ${misc:Depends},
+         ${shlibs:Depends}
+Description: Document (PostScript, PDF) rendering library
+ This package contains libevdocument, which performs the rendering of the
+ documents.
+ .
+ It ships with a ps, pdf, dvi, tiff, djvu, comics and xps backend.
+
+Package: libevview3-3t64
+Provides: ${t64:Provides}
+Replaces: libevview3-3
+Breaks: libevview3-3 (<< ${source:Version})
+Architecture: any
+Multi-Arch: same
+Section: libs
+Depends: gstreamer1.0-plugins-base,
+         ${misc:Depends},
+         ${shlibs:Depends}
+Description: Document (PostScript, PDF) rendering library - Gtk+ widgets
+ This package contains libevview, which provides GTK+ widgets for displaying
+ documents.
+
+Package: libevince-dev
+Architecture: any
+Multi-Arch: same
+Section: libdevel
+Depends: gir1.2-evince-3.0 (= ${binary:Version}),
+         libevdocument3-4t64 (= ${binary:Version}),
+         libevview3-3t64 (= ${binary:Version}),
+         libglib2.0-dev (>= 2.38.0),
+         libgtk-3-dev (>= 3.16.0),
+         ${misc:Depends}
+Description: Document (PostScript, PDF) rendering library - development files
+ This package contains evince-related libraries for rendering and displaying
+ Evince documents like PostScript (PS), Encapsulated PostScript (EPS), DjVu,
+ DVI, Portable Document Format (PDF) and XML Paper Specification (XPS) files.
+ * libevdocument, which performs the rendering of the documents
+ * libevview, which provides GTK+ widgets for displaying documents
+ .
+ This package provides the development headers, static libraries and
+ documentation.
+
+Package: gir1.2-evince-3.0
+Section: introspection
+Architecture: any
+Multi-Arch: same
+Depends: ${gir:Depends},
+         ${misc:Depends},
+         ${shlibs:Depends}
+Provides: gir1.2-evincedocument-3.0 (= ${binary:Version}),
+          gir1.2-evinceview-3.0 (= ${binary:Version})
+Description: GObject introspection data for the evince libraries
+ This package contains introspection data for the libevview and
+ libevdocument libraries.
+ .
+ Evince is a simple multi-page document viewer.  It can display and print
+ PostScript (PS), Encapsulated PostScript (EPS), DjVu, DVI, Portable
+ Document Format (PDF) and XML Paper Specification (XPS) files.
+ When supported by the document, it also allows searching for text,
+ copying text to the clipboard, hypertext navigation, and
+ table-of-contents bookmarks.
+ .
+ It can be used by packages using the GIRepository format to generate
+ dynamic bindings.

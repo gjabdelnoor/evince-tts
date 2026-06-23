@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <template class="EvZoomAction" parent="GtkBox">
+    <property name="orientation">vertical</property>
+    <property name="tooltip-text" translatable="yes">Select or set the zoom level of the document</property>
+    <child>
+      <object class="GtkEntry" id="entry">
+        <style>
+          <class name="tnum" />
+        </style>
+        <property name="secondary-icon-name">pan-down-symbolic</property>
+        <property name="xalign">1.0</property>
+        <property name="max-width-chars">0</property>
+        <property name="visible">True</property>
+        <signal name="icon-press" handler="entry_icon_press_cb"/>
+        <signal name="activate" handler="entry_activated_cb"/>
+        <signal name="focus-out-event" handler="focus_out_cb" swapped="yes"/>
+      </object>
+    </child>
+  </template>
+
+  <object class="GtkPopover" id="popup">
+    <property name="position">3</property>
+    <property name="relative-to">entry</property>
+  </object>
+
+  <menu id="menu">
+    <section>
+      <item>
+        <attribute name="label" translatable="yes">Fit Pa_ge</attribute>
+        <attribute name="action">win.sizing-mode</attribute>
+        <attribute name="target">fit-page</attribute>
+      </item>
+      <item>
+        <attribute name="label" translatable="yes">Fit _Width</attribute>
+        <attribute name="action">win.sizing-mode</attribute>
+        <attribute name="target">fit-width</attribute>
+      </item>
+      <item>
+        <attribute name="label" translatable="yes">_Automatic</attribute>
+        <attribute name="action">win.sizing-mode</attribute>
+        <attribute name="target">automatic</attribute>
+      </item>
+    </section>
+    <section>
+    </section>
+  </menu>
+</interface>

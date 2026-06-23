@@ -1,0 +1,4 @@
+#Our copyright file is more complex, but correct:
+libevview3-3t64: copyright-without-copyright-notice
+libevview3-3t64: copyright-refers-to-versionless-license-file
+libevview3-3t64: package-name-doesnt-match-sonames libevview3-3

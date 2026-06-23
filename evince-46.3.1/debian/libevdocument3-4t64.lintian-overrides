@@ -1,0 +1,4 @@
+#Our copyright file is more complex, but correct:
+libevdocument3-4t64: copyright-without-copyright-notice
+libevdocument3-4t64: copyright-refers-to-versionless-license-file
+libevdocument3-4t64: package-name-doesnt-match-sonames libevdocument3-4

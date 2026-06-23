@@ -1,0 +1,117 @@
+include: 'https://gitlab.gnome.org/GNOME/citemplates/raw/master/flatpak/flatpak_ci_initiative.yml'
+
+stages:
+    - lint
+    - build
+    - deploy
+    - image
+
+variables:
+    BUNDLE: "org.gnome.Evince.flatpak"
+
+editorconfig:
+    stage: lint
+    image: alpine:edge
+    script:
+        - apk add editorconfig-checker
+        - ec --disable-indentation --exclude '^.git/|cut-n-paste'
+    allow_failure: true
+
+meson:
+    image: registry.gitlab.gnome.org/gnome/evince/x86_64-ubuntu:gtk3
+    stage: build
+
+    script:
+        - >
+            meson
+            -Dlibhandy:examples=false -Dlibhandy:tests=false -Dlibhandy:vapi=false
+            -Dlibhandy:glade_catalog=disabled -Dlibhandy:introspection=disabled
+            _build
+        - ninja -C _build all
+
+    artifacts:
+        when: on_failure
+        paths:
+        - _build/meson-logs/meson-log.txt
+        expire_in: 2 days
+
+meson-internal-synctex:
+    image: registry.gitlab.gnome.org/gnome/evince/x86_64-ubuntu:gtk3
+    stage: build
+
+    script:
+        - meson -Dinternal_synctex=true _build
+        - ninja -C _build all
+
+    artifacts:
+        when: on_failure
+        paths:
+        - _build/meson-logs/meson-log.txt
+        expire_in: 2 days
+
+flatpak:
+    extends: .flatpak
+    stage: build
+
+    variables:
+        MANIFEST_PATH: "build-aux/flatpak/org.gnome.Evince.json"
+        RUNTIME_REPO: "https://nightly.gnome.org/gnome-nightly.flatpakrepo"
+        FLATPAK_MODULE: "evince"
+        MESON_ARGS: "-Dnautilus=false -Dgtk_doc=false"
+        APP_ID: "org.gnome.Evince"
+    artifacts:
+        # Rewrite paths and reports to "remove" testlog.txt and junit files,
+        # which do not exists in evince build, yet.
+        paths:
+            - "${BUNDLE}"
+            - 'repo.tar'
+            - '.flatpak-builder/build/${FLATPAK_MODULE}/_flatpak_build/meson-logs/meson-log.txt'
+        reports:
+            junit: []
+
+nightly:
+    dependencies:
+        - flatpak
+    extends: .publish_nightly
+
+pages:
+    image: registry.gitlab.gnome.org/gnome/evince/x86_64-ubuntu:gtk3
+    stage: deploy
+    rules:
+        - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PROJECT_NAMESPACE == "GNOME"
+    script:
+        - meson setup _build
+        - ninja -C _build
+        - mkdir public
+        - mv _build/help/reference/libdocument/libevdocument public/document/
+        - mv _build/help/reference/libview/libevview public/view/
+    artifacts:
+        paths:
+            - public/
+        expire_in: 2 days
+
+update image:
+    variables:
+        IMAGE_TAG: $CI_REGISTRY_IMAGE/x86_64-ubuntu
+        # Tell 'docker:dind' to enable TLS (recommended)
+        # and generate certificates in the specified directory.
+        DOCKER_TLS_CERTDIR: "/certs"
+        STORAGE_DRIVER: vfs
+        BUILDAH_FORMAT: docker
+        BUILDAH_ISOLATION: chroot
+    image: alpine:latest
+    stage: image
+    script:
+        - apk add --no-cache buildah runc
+        - buildah bud --tag $IMAGE_TAG -f .gitlab-ci/ubuntu.Dockerfile
+        - buildah tag $IMAGE_TAG "$IMAGE_TAG:v$CI_JOB_ID"
+        - buildah login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+        - buildah push --creds $CI_REGISTRY_USER:$CI_REGISTRY_PASSWORD $IMAGE_TAG
+        - buildah push --creds $CI_REGISTRY_USER:$CI_REGISTRY_PASSWORD "$IMAGE_TAG:v$CI_JOB_ID"
+    when: manual
+    only:
+       - web
+       - main
+    except:
+       variables:
+           - $CI_PROJECT_NAMESPACE != "GNOME"

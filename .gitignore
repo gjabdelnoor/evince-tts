@@ -1,7 +1,14 @@
+# build / packaging artifacts
 evince-46.3.1/build/
+evince-46.3.1/.pc/
+dist/
+*.deb
+*.AppImage
 *.log
 *.ps
 sample.pdf
+
+# apt source tarballs
 evince_*.orig.tar.*
 evince_*.debian.tar.*
 evince_*.dsc
