@@ -1,7 +1,7 @@
 /* ev-tts-controller.c */
 
 #include "ev-tts-controller.h"
-#include "ev-tts-minimax.h"
+#include "ev-tts-backend.h"
 #include "ev-keyring.h"
 
 #include "ev-document.h"
@@ -41,7 +41,7 @@ struct _EvTtsController {
 
         EvView          *view;          /* not owned */
         EvDocumentModel *model;         /* owned ref */
-        EvTtsMiniMax    *backend;
+        EvTtsBackend    *backend;
         GSettings       *settings;
 
         GstElement      *playbin;
@@ -219,7 +219,8 @@ cache_page_dir (EvTtsController *self, gint page)
         EvDocument *doc = ev_document_model_get_document (self->model);
         const char *uri = doc ? ev_document_get_uri (doc) : NULL;
         g_autofree char *dochash = NULL;
-        g_autofree char *voice = NULL, *model = NULL, *vsan = NULL, *msan = NULL;
+        g_autofree char *prov = NULL, *voice = NULL, *model = NULL;
+        g_autofree char *psan = NULL, *vsan = NULL, *msan = NULL;
         g_autofree char *profile = NULL, *pagedir = NULL;
         char sbuf[G_ASCII_DTOSTR_BUF_SIZE];
         double speed;
@@ -231,14 +232,16 @@ cache_page_dir (EvTtsController *self, gint page)
         dochash = g_compute_checksum_for_string (G_CHECKSUM_SHA256, uri, -1);
         dochash[16] = '\0';
 
+        prov  = g_settings_get_string (self->settings, "tts-provider");
         voice = g_settings_get_string (self->settings, "tts-voice-id");
         model = g_settings_get_string (self->settings, "tts-model");
         speed = g_settings_get_double (self->settings, "tts-speed");
         pitch = g_settings_get_int (self->settings, "tts-pitch");
         g_ascii_formatd (sbuf, sizeof sbuf, "%.2f", speed);
+        psan = cache_sanitize ((prov && *prov) ? prov : "minimax");
         vsan = cache_sanitize ((voice && *voice) ? voice : "default");
-        msan = cache_sanitize ((model && *model) ? model : "speech-2.6-hd");
-        profile = g_strdup_printf ("%s_%s_s%s_p%d", vsan, msan, sbuf, pitch);
+        msan = cache_sanitize ((model && *model) ? model : "speech-2.8-hd");
+        profile = g_strdup_printf ("%s_%s_%s_s%s_p%d", psan, vsan, msan, sbuf, pitch);
         pagedir = g_strdup_printf ("page-%04d", page + 1);
 
         return g_build_filename (g_get_user_cache_dir (), "evince-tts",
@@ -532,7 +535,7 @@ on_synth_ready (GObject *source, GAsyncResult *res, gpointer user_data)
         GBytes          *mp3;
         gboolean         stale = (ctx->gen != self->gen);
 
-        mp3 = ev_tts_minimax_synthesize_finish (EV_TTS_MINIMAX (source), res, &error);
+        mp3 = ev_tts_backend_synthesize_finish (EV_TTS_BACKEND (source), res, &error);
         if (!mp3) {
                 if (!stale && !g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
                         emit_status (self, "TTS error: %s",
@@ -577,7 +580,7 @@ request_sentence_ctx (EvTtsController *self, gint page, gint idx)
         ctx->page = page;
         ctx->idx  = idx;
         ctx->gen  = self->gen;
-        ev_tts_minimax_synthesize_async (self->backend, s->text, self->cancellable,
+        ev_tts_backend_synthesize_async (self->backend, s->text, self->cancellable,
                                          on_synth_ready, ctx);
 }
 
@@ -702,7 +705,7 @@ dwell_fire (gpointer data)
         self->dwell_id = 0;
         if (!self->active) {
                 ev_tts_controller_reload_config (self);
-                if (ev_tts_minimax_is_configured (self->backend))
+                if (ev_tts_backend_is_configured (self->backend))
                         ensure_window (self, ev_document_model_get_page (self->model));
         }
         return G_SOURCE_REMOVE;
@@ -720,7 +723,7 @@ on_model_page_changed (EvDocumentModel *model, gint old, gint new_page,
 }
 
 static void
-on_backend_log (EvTtsMiniMax *backend, const char *line, EvTtsController *self)
+on_backend_log (EvTtsBackend *backend, const char *line, EvTtsController *self)
 {
         g_signal_emit (self, signals[SIGNAL_LOG], 0, line);
 }
@@ -730,6 +733,8 @@ on_backend_log (EvTtsMiniMax *backend, const char *line, EvTtsController *self)
 void
 ev_tts_controller_reload_config (EvTtsController *self)
 {
+        g_autofree char *prov    = g_settings_get_string (self->settings, "tts-provider");
+        g_autofree char *base    = g_settings_get_string (self->settings, "tts-base-url");
         g_autofree char *host    = g_settings_get_string (self->settings, "tts-host");
         g_autofree char *group   = g_settings_get_string (self->settings, "tts-group-id");
         g_autofree char *voice   = g_settings_get_string (self->settings, "tts-voice-id");
@@ -739,7 +744,8 @@ ev_tts_controller_reload_config (EvTtsController *self)
         double vol   = g_settings_get_double (self->settings, "tts-vol");
         int    pitch = g_settings_get_int (self->settings, "tts-pitch");
 
-        ev_tts_minimax_configure (self->backend, host, group, api_key, voice,
+        ev_tts_backend_configure (self->backend, ev_tts_provider_from_string (prov),
+                                  base, host, group, api_key, voice,
                                   model, speed, vol, pitch);
 }
 
@@ -762,7 +768,7 @@ ev_tts_controller_invalidate_cache (EvTtsController *self)
                         gst_element_set_state (self->playbin, GST_STATE_NULL);
                 ensure_window (self, self->page);
                 ev_tts_controller_ensure_playing (self);
-        } else if (ev_tts_minimax_is_configured (self->backend)) {
+        } else if (ev_tts_backend_is_configured (self->backend)) {
                 ensure_window (self, ev_document_model_get_page (self->model));
         }
 }
@@ -789,7 +795,7 @@ void
 ev_tts_controller_set_model (EvTtsController *self, const char *model)
 {
         g_return_if_fail (EV_IS_TTS_CONTROLLER (self));
-        g_settings_set_string (self->settings, "tts-model", model ? model : "speech-2.6-hd");
+        g_settings_set_string (self->settings, "tts-model", model ? model : "speech-2.8-hd");
         ev_tts_controller_reload_config (self);
         ev_tts_controller_invalidate_cache (self);
 }
@@ -799,6 +805,13 @@ ev_tts_controller_dup_model (EvTtsController *self)
 {
         g_return_val_if_fail (EV_IS_TTS_CONTROLLER (self), NULL);
         return g_settings_get_string (self->settings, "tts-model");
+}
+
+char *
+ev_tts_controller_dup_provider (EvTtsController *self)
+{
+        g_return_val_if_fail (EV_IS_TTS_CONTROLLER (self), NULL);
+        return g_settings_get_string (self->settings, "tts-provider");
 }
 
 char *
@@ -820,7 +833,7 @@ on_voices_ready (GObject *source, GAsyncResult *res, gpointer data)
 {
         EvTtsController *self = data;
         GError *error = NULL;
-        char  **voices = ev_tts_minimax_list_cloned_voices_finish (res, &error);
+        char  **voices = ev_tts_backend_list_voices_finish (res, &error);
 
         if (voices) {
                 g_signal_emit (self, signals[SIGNAL_VOICES_CHANGED], 0, voices);
@@ -834,17 +847,28 @@ on_voices_ready (GObject *source, GAsyncResult *res, gpointer data)
 void
 ev_tts_controller_refresh_voices (EvTtsController *self)
 {
+        g_autofree char *prov = NULL;
         g_autofree char *host = NULL;
+        g_autofree char *base = NULL;
         g_autofree char *key = NULL;
+        EvTtsProvider provider;
+        const char *endpoint;
 
         g_return_if_fail (EV_IS_TTS_CONTROLLER (self));
+        prov = g_settings_get_string (self->settings, "tts-provider");
         host = g_settings_get_string (self->settings, "tts-host");
+        base = g_settings_get_string (self->settings, "tts-base-url");
         key  = ev_keyring_lookup_password (TTS_KEYRING_URI);
-        if (!host || !*host || !key || !*key)
-                return;
+        provider = ev_tts_provider_from_string (prov);
 
-        ev_tts_minimax_list_cloned_voices_async (host, key, self->cancellable,
-                                                 on_voices_ready, g_object_ref (self));
+        /* MiniMax needs host+key to fetch cloned voices; OpenAI/Google return a
+         * static set, so they need no credentials here. */
+        if (provider == EV_TTS_PROVIDER_MINIMAX && (!host || !*host || !key || !*key))
+                return;
+        endpoint = (provider == EV_TTS_PROVIDER_MINIMAX) ? host : base;
+
+        ev_tts_backend_list_voices_async (provider, endpoint, key, self->cancellable,
+                                          on_voices_ready, g_object_ref (self));
 }
 
 void
@@ -858,7 +882,7 @@ ev_tts_controller_start (EvTtsController *self)
                 return;
 
         ev_tts_controller_reload_config (self);
-        if (!ev_tts_minimax_is_configured (self->backend)) {
+        if (!ev_tts_backend_is_configured (self->backend)) {
                 emit_status (self, "Set your MiniMax API key and voice in TTS Settings first.");
                 return;
         }
@@ -1116,7 +1140,7 @@ ev_tts_controller_init (EvTtsController *self)
         self->cancellable = g_cancellable_new ();
         self->pages       = g_hash_table_new_full (g_direct_hash, g_direct_equal,
                                                    NULL, (GDestroyNotify) page_cache_free);
-        self->backend     = ev_tts_minimax_new ();
+        self->backend     = ev_tts_backend_new ();
         self->settings    = g_settings_new (TTS_SCHEMA);
         self->playbin     = gst_element_factory_make ("playbin", "ev-tts-playbin");
 

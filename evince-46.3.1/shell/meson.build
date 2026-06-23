@@ -17,7 +17,7 @@ evince_sources = files(
   'ev-properties-license.c',
   'ev-recent-view.c',
   'ev-toolbar.c',
-  'ev-tts-minimax.c',
+  'ev-tts-backend.c',
   'ev-tts-controller.c',
   'ev-tts-bar.c',
   'ev-tts-debug.c',

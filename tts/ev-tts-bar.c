@@ -1,6 +1,7 @@
 /* ev-tts-bar.c */
 
 #include "ev-tts-bar.h"
+#include "ev-tts-backend.h"
 
 struct _EvTtsBar {
         GtkBox           parent_instance;
@@ -215,20 +216,39 @@ ev_tts_bar_new (EvTtsController *controller)
         }
         self->updating = FALSE;
 
-        /* HD / Turbo model (left). Turbo is cheaper + faster. */
+        /* Model (left), populated per provider. MiniMax: HD/Turbo; OpenAI-family:
+         * the common TTS models; Google has no model knob (voice carries it). */
         self->model = gtk_combo_box_text_new ();
-        gtk_combo_box_text_append (GTK_COMBO_BOX_TEXT (self->model),
-                                   "speech-2.6-hd", "HD");
-        gtk_combo_box_text_append (GTK_COMBO_BOX_TEXT (self->model),
-                                   "speech-2.6-turbo", "Turbo");
-        gtk_widget_set_tooltip_text (self->model, "HD = best quality · Turbo = faster & cheaper");
+        gtk_widget_set_tooltip_text (self->model, "Model / quality tier");
         gtk_widget_set_valign (self->model, GTK_ALIGN_CENTER);
         {
+                g_autofree char *prov = ev_tts_controller_dup_provider (controller);
                 g_autofree char *m = ev_tts_controller_dup_model (controller);
+                EvTtsProvider provider = ev_tts_provider_from_string (prov);
+                GtkComboBoxText *mc = GTK_COMBO_BOX_TEXT (self->model);
+
                 self->updating = TRUE;
-                if (!m || !*m || !gtk_combo_box_set_active_id (GTK_COMBO_BOX (self->model), m))
-                        gtk_combo_box_set_active_id (GTK_COMBO_BOX (self->model),
-                                                     "speech-2.6-hd");
+                if (provider == EV_TTS_PROVIDER_OPENAI) {
+                        gtk_combo_box_text_append (mc, "gpt-4o-mini-tts", "4o-mini-tts");
+                        gtk_combo_box_text_append (mc, "tts-1", "tts-1");
+                        gtk_combo_box_text_append (mc, "tts-1-hd", "tts-1-hd");
+                } else if (provider == EV_TTS_PROVIDER_GOOGLE) {
+                        gtk_combo_box_text_append (mc, "google", "Google");
+                } else {
+                        gtk_combo_box_text_append (mc, "speech-2.8-hd", "HD");
+                        gtk_combo_box_text_append (mc, "speech-2.8-turbo", "Turbo");
+                }
+                /* Select the stored model; if it isn't valid for this provider,
+                 * fall back to the first entry and persist that choice. */
+                if (!m || !*m || !gtk_combo_box_set_active_id (GTK_COMBO_BOX (self->model), m)) {
+                        gtk_combo_box_set_active (GTK_COMBO_BOX (self->model), 0);
+                        self->updating = FALSE;
+                        if (provider != EV_TTS_PROVIDER_GOOGLE) {
+                                const char *id = gtk_combo_box_get_active_id (GTK_COMBO_BOX (self->model));
+                                if (id)
+                                        ev_tts_controller_set_model (controller, id);
+                        }
+                }
                 self->updating = FALSE;
         }
 

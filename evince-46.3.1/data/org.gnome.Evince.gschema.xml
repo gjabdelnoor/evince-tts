@@ -40,6 +40,14 @@
       <default>true</default>
       <summary>Allow links to change the zoom level.</summary>
     </key>
+    <key type="s" name="tts-provider">
+      <default>'minimax'</default>
+      <summary>TTS provider: 'minimax', 'openai' (OpenAI-compatible incl. OpenRouter and local), or 'google'.</summary>
+    </key>
+    <key type="s" name="tts-base-url">
+      <default>''</default>
+      <summary>Base URL for the OpenAI-compatible provider, e.g. https://openrouter.ai/api/v1 or http://localhost:8880/v1.</summary>
+    </key>
     <key type="s" name="tts-host">
       <default>'api.minimax.io'</default>
       <summary>MiniMax TTS API host.</summary>
@@ -53,8 +61,8 @@
       <summary>MiniMax custom (cloned) voice id.</summary>
     </key>
     <key type="s" name="tts-model">
-      <default>'speech-2.6-hd'</default>
-      <summary>MiniMax TTS model name.</summary>
+      <default>'speech-2.8-hd'</default>
+      <summary>TTS model name (provider-specific).</summary>
     </key>
     <key type="d" name="tts-speed">
       <default>1.0</default>

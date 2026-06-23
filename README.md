@@ -1,13 +1,31 @@
-# Evince TTS — Read PDFs aloud in a custom MiniMax voice
+# Evince TTS — Read PDFs aloud with cloud or local voices
 
 A fork of Ubuntu's stock **Document Viewer (GNOME Evince 46.3.1)** that adds a
 **Read Aloud** feature: it pulls each page's text layer (via Evince's existing
-Poppler extraction), synthesizes it sentence-by-sentence with the **MiniMax
-T2A V2** API in your **custom cloned voice**, plays it with GStreamer, and
-highlights the sentence being spoken — auto-advancing through the document.
+Poppler extraction), synthesizes it sentence-by-sentence through your chosen TTS
+provider, plays it with GStreamer, and highlights the sentence being spoken —
+auto-advancing through the document.
 
 > This is a community fork for personal/educational use. Evince is GPLv2+;
-> these additions inherit that license. Not affiliated with GNOME or MiniMax.
+> these additions inherit that license. Not affiliated with GNOME, MiniMax,
+> OpenAI, OpenRouter or Google.
+
+## Providers
+
+Pick a provider in **☰ → TTS Settings**:
+
+| Provider | What it is | Config |
+|----------|-----------|--------|
+| **MiniMax** | Speech 2.8 (`speech-2.8-hd` / `speech-2.8-turbo`) in your **custom cloned voice** | API key + region; *Fetch voices* lists your clones |
+| **OpenAI** | `gpt-4o-mini-tts` / `tts-1` / `tts-1-hd` | API key (base `https://api.openai.com/v1`) |
+| **OpenRouter** | OpenRouter's `/audio/speech` aggregator | API key (base `https://openrouter.ai/api/v1`) |
+| **Local** | any **OpenAI-compatible** server (Kokoro-FastAPI, openedai-speech, LocalAI…) | base URL e.g. `http://localhost:8880/v1`; key usually blank |
+| **Google** | Google Cloud Text-to-Speech | API key; voice like `en-US-Neural2-C` |
+
+OpenAI, OpenRouter and Local share one backend (the OpenAI-compatible
+`/audio/speech` endpoint) and differ only by base URL. The audio cache is keyed
+by provider + voice + model + speed + pitch, so switching providers never
+re-synthesizes work you've already paid for.
 
 ## Features
 
@@ -67,7 +85,7 @@ click **Fetch voices**, pick your cloned voice, **Save**, and choose
 
 | File | Purpose |
 |------|---------|
-| `ev-tts-minimax.{c,h}` | MiniMax T2A V2 client (libsoup + json-glib), hex→mp3, voice list, `log` signal |
+| `ev-tts-backend.{c,h}` | multi-provider client (MiniMax hex / OpenAI-compatible raw / Google base64), voice list, `log` signal |
 | `ev-tts-controller.{c,h}` | read loop, per-page sliding + on-disk cache, idle pre-gen, voice/speed/model |
 | `ev-tts-bar.{c,h}` | header-bar media + voice/speed/model controls |
 | `ev-tts-prefs.{c,h}` | settings dialog (key, region, voice, model, speed…) |
