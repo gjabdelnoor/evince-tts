@@ -8,6 +8,7 @@
 #include "ev-document-text.h"
 #include <gst/gst.h>
 #include <glib/gstdio.h>
+#include <json-glib/json-glib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -26,7 +27,8 @@ typedef struct {
         EvRectangle *rects;     /* merged line rectangles (doc coords) */
         guint        n_rects;
         GBytes      *audio;     /* cached MP3, NULL until synthesized */
-        char        *tmpfile;   /* separate cache file, written when audio arrives */
+        char        *file;      /* mp3 path used for playback */
+        gboolean     persistent;/* file lives in the on-disk cache (don't unlink) */
         gboolean     requested;
 } Sentence;
 
@@ -104,9 +106,10 @@ sentence_free (Sentence *s)
         g_free (s->rects);
         if (s->audio)
                 g_bytes_unref (s->audio);
-        if (s->tmpfile) {
-                g_unlink (s->tmpfile);
-                g_free (s->tmpfile);
+        if (s->file) {
+                if (!s->persistent)     /* keep the on-disk cache; only purge temps */
+                        g_unlink (s->file);
+                g_free (s->file);
         }
         g_free (s);
 }
@@ -184,6 +187,175 @@ is_sentence_terminator (gunichar c)
 {
         return c == '.' || c == '!' || c == '?' || c == '\n' ||
                c == 0x3002 /* 。 */ || c == 0xFF01 /* ！ */ || c == 0xFF1F /* ？ */;
+}
+
+/* --- persistent on-disk cache ---------------------------------------------
+ *
+ * Layout (so a later script can stitch an audiobook):
+ *   ~/.cache/evince-tts/<doc-sha>/<voice>_<model>_s<speed>_p<pitch>/page-0007/
+ *       page.json          (text + ordering for the page)
+ *       sent-000-<hash>.mp3 (one clip per sentence)
+ *
+ * Audio is keyed by document + voice + model + speed + pitch + sentence text,
+ * so reopening a book (or switching voice/model and back) reuses clips instead
+ * of re-hitting the API. */
+
+static char *
+cache_sanitize (const char *s)
+{
+        GString *o = g_string_new (NULL);
+        for (; s && *s; s++) {
+                char c = *s;
+                g_string_append_c (o, (g_ascii_isalnum (c) || c == '-' || c == '_' || c == '.')
+                                        ? c : '_');
+        }
+        return g_string_free (o, FALSE);
+}
+
+/* Directory holding the current voice/model/speed profile's clips for a page. */
+static char *
+cache_page_dir (EvTtsController *self, gint page)
+{
+        EvDocument *doc = ev_document_model_get_document (self->model);
+        const char *uri = doc ? ev_document_get_uri (doc) : NULL;
+        g_autofree char *dochash = NULL;
+        g_autofree char *voice = NULL, *model = NULL, *vsan = NULL, *msan = NULL;
+        g_autofree char *profile = NULL, *pagedir = NULL;
+        char sbuf[G_ASCII_DTOSTR_BUF_SIZE];
+        double speed;
+        int pitch;
+
+        if (!uri || !*uri)
+                return NULL;
+
+        dochash = g_compute_checksum_for_string (G_CHECKSUM_SHA256, uri, -1);
+        dochash[16] = '\0';
+
+        voice = g_settings_get_string (self->settings, "tts-voice-id");
+        model = g_settings_get_string (self->settings, "tts-model");
+        speed = g_settings_get_double (self->settings, "tts-speed");
+        pitch = g_settings_get_int (self->settings, "tts-pitch");
+        g_ascii_formatd (sbuf, sizeof sbuf, "%.2f", speed);
+        vsan = cache_sanitize ((voice && *voice) ? voice : "default");
+        msan = cache_sanitize ((model && *model) ? model : "speech-2.6-hd");
+        profile = g_strdup_printf ("%s_%s_s%s_p%d", vsan, msan, sbuf, pitch);
+        pagedir = g_strdup_printf ("page-%04d", page + 1);
+
+        return g_build_filename (g_get_user_cache_dir (), "evince-tts",
+                                 dochash, profile, pagedir, NULL);
+}
+
+static char *
+cache_sentence_file (const char *page_dir, gint idx, const char *text)
+{
+        g_autofree char *h = g_compute_checksum_for_string (G_CHECKSUM_SHA256, text, -1);
+        g_autofree char *name = NULL;
+        h[8] = '\0';
+        name = g_strdup_printf ("sent-%03d-%s.mp3", idx, h);
+        return g_build_filename (page_dir, name, NULL);
+}
+
+/* Persist an mp3 clip and point the sentence at it. */
+static void
+cache_store (EvTtsController *self, gint page, Sentence *s, GBytes *mp3)
+{
+        g_autofree char *dir = cache_page_dir (self, page);
+        g_autofree char *path = NULL;
+        gsize len;
+        const char *data;
+
+        if (s->file)
+                return;                 /* already have a file */
+
+        data = g_bytes_get_data (mp3, &len);
+
+        if (dir) {
+                /* find this sentence's index within its page for the filename */
+                PageCache *pc = g_hash_table_lookup (self->pages, GINT_TO_POINTER (page));
+                guint idx = 0;
+                if (pc && g_ptr_array_find (pc->sentences, s, &idx)) {
+                        g_mkdir_with_parents (dir, 0700);
+                        path = cache_sentence_file (dir, (gint) idx, s->text);
+                        if (g_file_set_contents (path, data, len, NULL)) {
+                                s->file = g_steal_pointer (&path);
+                                s->persistent = TRUE;
+                                return;
+                        }
+                }
+        }
+
+        /* Fallback: a throwaway temp file. */
+        {
+                GError *error = NULL;
+                int fd = g_file_open_tmp ("evince-tts-XXXXXX.mp3", &s->file, &error);
+                if (fd < 0) {
+                        g_clear_error (&error);
+                        return;
+                }
+                if (write (fd, data, len) != (gssize) len)
+                        g_clear_pointer (&s->file, g_free);
+                close (fd);
+                s->persistent = FALSE;
+        }
+}
+
+/* Load any already-cached clips for a page (no API calls) + write page.json. */
+static void
+cache_load_page (EvTtsController *self, gint page, PageCache *pc)
+{
+        g_autofree char *dir = cache_page_dir (self, page);
+        g_autoptr (JsonBuilder) jb = NULL;
+        g_autoptr (JsonGenerator) gen = NULL;
+        g_autoptr (JsonNode) root = NULL;
+        g_autofree char *meta_path = NULL;
+
+        if (!dir || pc->sentences->len == 0)
+                return;
+
+        jb = json_builder_new ();
+        json_builder_begin_object (jb);
+        json_builder_set_member_name (jb, "page");
+        json_builder_add_int_value (jb, page + 1);
+        json_builder_set_member_name (jb, "sentences");
+        json_builder_begin_array (jb);
+
+        for (guint i = 0; i < pc->sentences->len; i++) {
+                Sentence *s = g_ptr_array_index (pc->sentences, i);
+                g_autofree char *path = cache_sentence_file (dir, i, s->text);
+                g_autofree char *base = g_path_get_basename (path);
+
+                if (!s->audio && g_file_test (path, G_FILE_TEST_EXISTS)) {
+                        char  *data = NULL;
+                        gsize  len = 0;
+                        if (g_file_get_contents (path, &data, &len, NULL) && len > 0) {
+                                s->audio = g_bytes_new_take (data, len);
+                                s->file = g_strdup (path);
+                                s->persistent = TRUE;
+                                s->requested = TRUE;     /* never re-synthesize */
+                        } else {
+                                g_free (data);
+                        }
+                }
+
+                json_builder_begin_object (jb);
+                json_builder_set_member_name (jb, "index");
+                json_builder_add_int_value (jb, i);
+                json_builder_set_member_name (jb, "file");
+                json_builder_add_string_value (jb, base);
+                json_builder_set_member_name (jb, "text");
+                json_builder_add_string_value (jb, s->text);
+                json_builder_end_object (jb);
+        }
+        json_builder_end_array (jb);
+        json_builder_end_object (jb);
+
+        g_mkdir_with_parents (dir, 0700);
+        gen = json_generator_new ();
+        root = json_builder_get_root (jb);
+        json_generator_set_root (gen, root);
+        json_generator_set_pretty (gen, TRUE);
+        meta_path = g_build_filename (dir, "page.json", NULL);
+        json_generator_to_file (gen, meta_path, NULL);
 }
 
 /* Extract sentences (text + highlight rects) for a page. Never returns NULL. */
@@ -283,6 +455,7 @@ page_get (EvTtsController *self, gint page, gboolean build)
         pc = g_new0 (PageCache, 1);
         pc->sentences = extract_sentences (self, page);
         g_hash_table_insert (self->pages, GINT_TO_POINTER (page), pc);
+        cache_load_page (self, page, pc);       /* reuse on-disk audio, write metadata */
         return pc;
 }
 
@@ -293,35 +466,6 @@ sentence_at (EvTtsController *self, gint page, gint idx)
         if (!pc || idx < 0 || idx >= (gint) pc->sentences->len)
                 return NULL;
         return g_ptr_array_index (pc->sentences, idx);
-}
-
-static gboolean
-ensure_tmpfile (EvTtsController *self, Sentence *s)
-{
-        GError *error = NULL;
-        int     fd;
-        gsize   len;
-        const char *data;
-
-        if (s->tmpfile)
-                return TRUE;
-        if (!s->audio)
-                return FALSE;
-
-        data = g_bytes_get_data (s->audio, &len);
-        fd = g_file_open_tmp ("evince-tts-XXXXXX.mp3", &s->tmpfile, &error);
-        if (fd < 0) {
-                emit_status (self, "TTS: %s", error->message);
-                g_clear_error (&error);
-                return FALSE;
-        }
-        if (write (fd, data, len) != (gssize) len) {
-                close (fd);
-                emit_status (self, "TTS: failed to buffer audio");
-                return FALSE;
-        }
-        close (fd);
-        return TRUE;
 }
 
 /* --- playback --- */
@@ -361,10 +505,12 @@ play_current (EvTtsController *self)
                 return FALSE;
         }
 
-        if (!ensure_tmpfile (self, s))
+        if (!s->file)
+                cache_store (self, self->page, s, s->audio);
+        if (!s->file)
                 return FALSE;
 
-        uri = g_filename_to_uri (s->tmpfile, NULL, NULL);
+        uri = g_filename_to_uri (s->file, NULL, NULL);
         gst_element_set_state (self->playbin, GST_STATE_READY);
         g_object_set (self->playbin, "uri", uri, "volume", self->volume, NULL);
         gst_element_set_state (self->playbin,
@@ -399,7 +545,7 @@ on_synth_ready (GObject *source, GAsyncResult *res, gpointer user_data)
                 Sentence *s = sentence_at (self, ctx->page, ctx->idx);
                 if (s && !s->audio) {
                         s->audio = g_bytes_ref (mp3);
-                        ensure_tmpfile (self, s);
+                        cache_store (self, ctx->page, s, mp3);   /* persist to disk */
                 }
                 /* If we're stalled waiting for exactly this sentence, start it. */
                 if (self->active && ctx->page == self->page && ctx->idx == self->cur) {
@@ -637,6 +783,22 @@ ev_tts_controller_set_speed (EvTtsController *self, double speed)
         g_settings_set_double (self->settings, "tts-speed", speed);
         ev_tts_controller_reload_config (self);
         ev_tts_controller_invalidate_cache (self);
+}
+
+void
+ev_tts_controller_set_model (EvTtsController *self, const char *model)
+{
+        g_return_if_fail (EV_IS_TTS_CONTROLLER (self));
+        g_settings_set_string (self->settings, "tts-model", model ? model : "speech-2.6-hd");
+        ev_tts_controller_reload_config (self);
+        ev_tts_controller_invalidate_cache (self);
+}
+
+char *
+ev_tts_controller_dup_model (EvTtsController *self)
+{
+        g_return_val_if_fail (EV_IS_TTS_CONTROLLER (self), NULL);
+        return g_settings_get_string (self->settings, "tts-model");
 }
 
 char *

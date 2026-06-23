@@ -8,6 +8,7 @@ struct _EvTtsBar {
         EvTtsController *controller;    /* not owned */
 
         GtkWidget       *voice;         /* GtkComboBoxText */
+        GtkWidget       *model;         /* GtkComboBoxText: HD / Turbo */
         GtkWidget       *speed;         /* GtkSpinButton */
         GtkWidget       *prev_btn;
         GtkWidget       *play_btn;
@@ -104,6 +105,17 @@ on_speed_changed (GtkSpinButton *spin, EvTtsBar *self)
         if (self->updating)
                 return;
         ev_tts_controller_set_speed (self->controller, gtk_spin_button_get_value (spin));
+}
+
+static void
+on_model_changed (GtkComboBox *combo, EvTtsBar *self)
+{
+        const char *id;
+        if (self->updating)
+                return;
+        id = gtk_combo_box_get_active_id (combo);
+        if (id)
+                ev_tts_controller_set_model (self->controller, id);
 }
 
 /* --- transport --- */
@@ -203,6 +215,23 @@ ev_tts_bar_new (EvTtsController *controller)
         }
         self->updating = FALSE;
 
+        /* HD / Turbo model (left). Turbo is cheaper + faster. */
+        self->model = gtk_combo_box_text_new ();
+        gtk_combo_box_text_append (GTK_COMBO_BOX_TEXT (self->model),
+                                   "speech-2.6-hd", "HD");
+        gtk_combo_box_text_append (GTK_COMBO_BOX_TEXT (self->model),
+                                   "speech-2.6-turbo", "Turbo");
+        gtk_widget_set_tooltip_text (self->model, "HD = best quality · Turbo = faster & cheaper");
+        gtk_widget_set_valign (self->model, GTK_ALIGN_CENTER);
+        {
+                g_autofree char *m = ev_tts_controller_dup_model (controller);
+                self->updating = TRUE;
+                if (!m || !*m || !gtk_combo_box_set_active_id (GTK_COMBO_BOX (self->model), m))
+                        gtk_combo_box_set_active_id (GTK_COMBO_BOX (self->model),
+                                                     "speech-2.6-hd");
+                self->updating = FALSE;
+        }
+
         /* Speed dial (left). */
         self->speed = gtk_spin_button_new_with_range (0.5, 2.0, 0.05);
         gtk_spin_button_set_digits (GTK_SPIN_BUTTON (self->speed), 2);
@@ -241,6 +270,7 @@ ev_tts_bar_new (EvTtsController *controller)
                                     ev_tts_controller_get_volume (controller));
 
         gtk_box_pack_start (GTK_BOX (self), self->voice, FALSE, FALSE, 0);
+        gtk_box_pack_start (GTK_BOX (self), self->model, FALSE, FALSE, 0);
         gtk_box_pack_start (GTK_BOX (self), self->speed, FALSE, FALSE, 0);
         gtk_box_pack_start (GTK_BOX (self),
                             gtk_separator_new (GTK_ORIENTATION_VERTICAL), FALSE, FALSE, 2);
@@ -249,6 +279,7 @@ ev_tts_bar_new (EvTtsController *controller)
         gtk_box_pack_start (GTK_BOX (self), self->volume, FALSE, FALSE, 0);
 
         g_signal_connect (self->voice, "changed", G_CALLBACK (on_voice_selected), self);
+        g_signal_connect (self->model, "changed", G_CALLBACK (on_model_changed), self);
         g_signal_connect (self->speed, "value-changed", G_CALLBACK (on_speed_changed), self);
         g_signal_connect (self->prev_btn, "clicked", G_CALLBACK (on_prev), self);
         g_signal_connect (self->play_btn, "clicked", G_CALLBACK (on_play), self);

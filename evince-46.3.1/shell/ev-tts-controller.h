@@ -41,7 +41,9 @@ void     ev_tts_controller_seek_fraction (EvTtsController *self, double fraction
 /* Voice / speed (persisted to GSettings; invalidates the audio cache). */
 void     ev_tts_controller_set_voice (EvTtsController *self, const char *voice);
 void     ev_tts_controller_set_speed (EvTtsController *self, double speed);
+void     ev_tts_controller_set_model (EvTtsController *self, const char *model);
 char    *ev_tts_controller_dup_voice (EvTtsController *self);   /* free with g_free */
+char    *ev_tts_controller_dup_model (EvTtsController *self);   /* free with g_free */
 double   ev_tts_controller_get_speed (EvTtsController *self);
 
 /* Asynchronously fetch cloned voices; result delivered via "voices-changed". */
