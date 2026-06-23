@@ -38,10 +38,25 @@ gboolean ev_tts_controller_get_progress (EvTtsController *self,
                                          gint64 *pos_ns, gint64 *dur_ns);
 void     ev_tts_controller_seek_fraction (EvTtsController *self, double fraction);
 
+/* Voice / speed (persisted to GSettings; invalidates the audio cache). */
+void     ev_tts_controller_set_voice (EvTtsController *self, const char *voice);
+void     ev_tts_controller_set_speed (EvTtsController *self, double speed);
+char    *ev_tts_controller_dup_voice (EvTtsController *self);   /* free with g_free */
+double   ev_tts_controller_get_speed (EvTtsController *self);
+
+/* Asynchronously fetch cloned voices; result delivered via "voices-changed". */
+void     ev_tts_controller_refresh_voices (EvTtsController *self);
+
+/* Drop all cached audio and re-warm (e.g. after a voice/speed/key change). */
+void     ev_tts_controller_invalidate_cache (EvTtsController *self);
+
 /* Re-read credentials/voice parameters from GSettings + keyring. */
 void     ev_tts_controller_reload_config (EvTtsController *self);
 
-/* Emitted ("notify::active", "notify::paused") so the UI can update controls.
- * A "status" signal carries a human-readable string for an info bar. */
+/* Signals:
+ *   "status"  (gchar*)  — human-readable status for the info bar
+ *   "log"     (gchar*)  — one API-call line (curl form) for the debug console
+ *   "voices-changed" (GStrv) — cloned voice ids from refresh_voices()
+ *   notify::active / notify::paused — playback state for the UI */
 
 G_END_DECLS

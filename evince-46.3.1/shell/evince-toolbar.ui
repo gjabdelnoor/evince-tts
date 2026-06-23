@@ -205,6 +205,10 @@
         <attribute name="label" translatable="yes">_TTS Settings…</attribute>
         <attribute name="action">win.tts-preferences</attribute>
       </item>
+      <item>
+        <attribute name="label" translatable="yes">TTS _Debug Console</attribute>
+        <attribute name="action">win.tts-debug</attribute>
+      </item>
     </section>
     <section>
       <item>

@@ -21,7 +21,33 @@ struct _EvTtsMiniMax {
         int      pitch;
 };
 
+enum { SIGNAL_LOG, N_SIGNALS };
+static guint minimax_signals[N_SIGNALS];
+
 G_DEFINE_FINAL_TYPE (EvTtsMiniMax, ev_tts_minimax, G_TYPE_OBJECT)
+
+G_GNUC_PRINTF (2, 3) static void
+emit_log (EvTtsMiniMax *self, const char *fmt, ...)
+{
+        va_list ap;
+        char *msg;
+
+        va_start (ap, fmt);
+        msg = g_strdup_vprintf (fmt, ap);
+        va_end (ap);
+        g_signal_emit (self, minimax_signals[SIGNAL_LOG], 0, msg);
+        g_free (msg);
+}
+
+/* "sk-cp-abcd…1234" — show only enough to recognise the key. */
+static char *
+mask_key (const char *key)
+{
+        gsize n = key ? strlen (key) : 0;
+        if (n <= 12)
+                return g_strdup ("***");
+        return g_strdup_printf ("%.8s…%.4s", key, key + n - 4);
+}
 
 static void
 ev_tts_minimax_finalize (GObject *object)
@@ -42,6 +68,11 @@ static void
 ev_tts_minimax_class_init (EvTtsMiniMaxClass *klass)
 {
         G_OBJECT_CLASS (klass)->finalize = ev_tts_minimax_finalize;
+
+        /* One line per API call, in curl form, for the debug console. */
+        minimax_signals[SIGNAL_LOG] =
+                g_signal_new ("log", G_TYPE_FROM_CLASS (klass), G_SIGNAL_RUN_LAST,
+                              0, NULL, NULL, NULL, G_TYPE_NONE, 1, G_TYPE_STRING);
 }
 
 static void
@@ -330,21 +361,30 @@ on_soup_done (GObject      *source,
 {
         SoupSession *session = SOUP_SESSION (source);
         g_autoptr (GTask) task = G_TASK (user_data);
+        EvTtsMiniMax *self = EV_TTS_MINIMAX (g_task_get_source_object (task));
+        guint status = 0;
         GError *error = NULL;
 
         g_autoptr (GBytes) body =
                 soup_session_send_and_read_finish (session, result, &error);
         if (!body) {
+                emit_log (self, "# \xE2\x86\x90 request failed: %s",
+                          error ? error->message : "unknown");
                 g_task_return_error (task, error);
                 return;
         }
+        status = soup_message_get_status (SOUP_MESSAGE (g_task_get_task_data (task)));
 
         GBytes *mp3 = parse_response (body, &error);
         if (!mp3) {
+                emit_log (self, "# \xE2\x86\x90 HTTP %u · %s", status,
+                          error ? error->message : "error");
                 g_task_return_error (task, error);
                 return;
         }
 
+        emit_log (self, "# \xE2\x86\x90 HTTP %u · %zu bytes mp3",
+                  status, g_bytes_get_size (mp3));
         g_task_return_pointer (task, mp3, (GDestroyNotify) g_bytes_unref);
 }
 
@@ -390,6 +430,19 @@ ev_tts_minimax_synthesize_async (EvTtsMiniMax        *self,
         g_autoptr (GBytes) body_bytes = g_bytes_new (body, body_len);
         soup_message_set_request_body_from_bytes (msg, "application/json", body_bytes);
 
+        /* Keep the message so the response handler can read its status. */
+        g_task_set_task_data (task, g_object_ref (msg), g_object_unref);
+
+        {
+                g_autofree char *masked = mask_key (self->api_key);
+                g_autofree char *short_body =
+                        (body_len > 360) ? g_strdup_printf ("%.360s…", body) : g_strdup (body);
+                emit_log (self,
+                          "curl -X POST '%s' -H 'Authorization: Bearer %s' "
+                          "-H 'Content-Type: application/json' -d '%s'",
+                          url, masked, short_body);
+        }
+
         soup_session_send_and_read_async (self->session, msg, G_PRIORITY_DEFAULT,
                                           cancellable, on_soup_done, task);
 }
@@ -401,5 +454,55 @@ ev_tts_minimax_synthesize_finish (EvTtsMiniMax  *self,
 {
         g_return_val_if_fail (g_task_is_valid (result, self), NULL);
 
+        return g_task_propagate_pointer (G_TASK (result), error);
+}
+
+/* --- async wrapper around the (blocking) voice list --- */
+
+typedef struct { char *host; char *key; } ListCtx;
+
+static void
+list_ctx_free (gpointer data)
+{
+        ListCtx *c = data;
+        g_free (c->host);
+        g_free (c->key);
+        g_free (c);
+}
+
+static void
+list_thread (GTask *task, gpointer source, gpointer task_data, GCancellable *cancellable)
+{
+        ListCtx *c = task_data;
+        GError  *error = NULL;
+        char   **voices = ev_tts_minimax_list_cloned_voices (c->host, c->key, &error);
+
+        if (voices)
+                g_task_return_pointer (task, voices, (GDestroyNotify) g_strfreev);
+        else
+                g_task_return_error (task, error);
+}
+
+void
+ev_tts_minimax_list_cloned_voices_async (const char          *host,
+                                         const char          *api_key,
+                                         GCancellable        *cancellable,
+                                         GAsyncReadyCallback  callback,
+                                         gpointer             user_data)
+{
+        GTask   *task = g_task_new (NULL, cancellable, callback, user_data);
+        ListCtx *c = g_new0 (ListCtx, 1);
+
+        c->host = g_strdup (host);
+        c->key  = g_strdup (api_key);
+        g_task_set_task_data (task, c, list_ctx_free);
+        g_task_run_in_thread (task, list_thread);
+        g_object_unref (task);
+}
+
+char **
+ev_tts_minimax_list_cloned_voices_finish (GAsyncResult *result, GError **error)
+{
+        g_return_val_if_fail (g_task_is_valid (result, NULL), NULL);
         return g_task_propagate_pointer (G_TASK (result), error);
 }

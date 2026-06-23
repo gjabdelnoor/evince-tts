@@ -39,6 +39,17 @@ char **ev_tts_minimax_list_cloned_voices (const char  *host,
                                           const char  *api_key,
                                           GError     **error);
 
+/* Async form of the above (runs the blocking call in a worker thread). */
+void    ev_tts_minimax_list_cloned_voices_async  (const char          *host,
+                                                  const char          *api_key,
+                                                  GCancellable        *cancellable,
+                                                  GAsyncReadyCallback  callback,
+                                                  gpointer             user_data);
+char  **ev_tts_minimax_list_cloned_voices_finish (GAsyncResult *result,
+                                                  GError      **error);
+
+/* Emits "log" (gchar*) — one line per API call, in curl form. */
+
 /* Synthesize a single chunk of text (keep under MiniMax's 10k char cap).
  * Completes with a GBytes of MP3 audio, or NULL + error. */
 void    ev_tts_minimax_synthesize_async  (EvTtsMiniMax        *self,

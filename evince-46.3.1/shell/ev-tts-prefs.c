@@ -117,8 +117,10 @@ on_response (GtkDialog *dialog, int response, gpointer user_data)
                                                   G_PASSWORD_SAVE_PERMANENTLY);
                 }
 
-                if (p->controller)
+                if (p->controller) {
                         ev_tts_controller_reload_config (p->controller);
+                        ev_tts_controller_invalidate_cache (p->controller);
+                }
         }
 
         g_object_unref (p->settings);

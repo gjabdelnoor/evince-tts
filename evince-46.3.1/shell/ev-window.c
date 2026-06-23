@@ -92,6 +92,7 @@
 #include "ev-search-box.h"
 #include "ev-tts-controller.h"
 #include "ev-tts-bar.h"
+#include "ev-tts-debug.h"
 #include "ev-tts-prefs.h"
 
 #ifdef ENABLE_DBUS
@@ -146,6 +147,7 @@ typedef struct {
 	GtkWidget *scrolled_window;
 	GtkWidget *view;
 	EvTtsController *tts_controller;
+	GtkWidget *tts_debug;
 	GtkWidget *loading_message;
 	GtkWidget *presentation_view;
 	GtkWidget *message_area;
@@ -6173,6 +6175,10 @@ ev_window_dispose (GObject *object)
 	g_clear_object (&priv->lockdown_settings);
 
 	/* Stop and drop the TTS controller before the view/model it references. */
+	if (priv->tts_debug) {
+		gtk_widget_destroy (priv->tts_debug);
+		priv->tts_debug = NULL;
+	}
 	g_clear_object (&priv->tts_controller);
 
 	if (priv->model) {
@@ -6371,6 +6377,40 @@ ev_window_cmd_tts_preferences (GSimpleAction *action,
 	ev_tts_show_preferences (GTK_WINDOW (window), priv->tts_controller);
 }
 
+static gboolean
+ev_window_tts_debug_delete (GtkWidget *widget, GdkEvent *event, EvWindow *window)
+{
+	GAction *action = g_action_map_lookup_action (G_ACTION_MAP (window), "tts-debug");
+	if (action)
+		g_simple_action_set_state (G_SIMPLE_ACTION (action),
+					   g_variant_new_boolean (FALSE));
+	gtk_widget_hide (widget);
+	return TRUE;   /* hide rather than destroy */
+}
+
+static void
+ev_window_cmd_toggle_tts_debug (GSimpleAction *action,
+				GVariant      *state,
+				gpointer       user_data)
+{
+	EvWindow *window = user_data;
+	EvWindowPrivate *priv = GET_PRIVATE (window);
+
+	if (g_variant_get_boolean (state)) {
+		if (!priv->tts_debug) {
+			priv->tts_debug = ev_tts_debug_window_new (GTK_WINDOW (window),
+								   priv->tts_controller);
+			g_signal_connect (priv->tts_debug, "delete-event",
+					  G_CALLBACK (ev_window_tts_debug_delete), window);
+		}
+		gtk_widget_show_all (priv->tts_debug);
+	} else if (priv->tts_debug) {
+		gtk_widget_hide (priv->tts_debug);
+	}
+
+	g_simple_action_set_state (action, state);
+}
+
 static const GActionEntry actions[] = {
 	{ "new", ev_window_cmd_new_window },
 	{ "open", ev_window_cmd_file_open },
@@ -6396,6 +6436,7 @@ static const GActionEntry actions[] = {
 	{ "find-previous", ev_window_cmd_edit_find_previous },
 	{ "read-aloud", NULL, NULL, "false", ev_window_cmd_toggle_read_aloud },
 	{ "tts-preferences", ev_window_cmd_tts_preferences },
+	{ "tts-debug", NULL, NULL, "false", ev_window_cmd_toggle_tts_debug },
 	{ "select-page", ev_window_cmd_focus_page_selector },
 	{ "continuous", NULL, NULL, "true", ev_window_cmd_continuous },
 	{ "dual-page", NULL, NULL, "false", ev_window_cmd_dual },
