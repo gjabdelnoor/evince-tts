@@ -93,6 +93,7 @@
 #include "ev-tts-controller.h"
 #include "ev-tts-bar.h"
 #include "ev-tts-debug.h"
+#include "ev-tts-mpris.h"
 #include "ev-tts-prefs.h"
 
 #ifdef ENABLE_DBUS
@@ -147,6 +148,7 @@ typedef struct {
 	GtkWidget *scrolled_window;
 	GtkWidget *view;
 	EvTtsController *tts_controller;
+	EvTtsMpris *tts_mpris;
 	GtkWidget *tts_debug;
 	GtkWidget *loading_message;
 	GtkWidget *presentation_view;
@@ -6175,6 +6177,7 @@ ev_window_dispose (GObject *object)
 	g_clear_object (&priv->lockdown_settings);
 
 	/* Stop and drop the TTS controller before the view/model it references. */
+	g_clear_object (&priv->tts_mpris);
 	if (priv->tts_debug) {
 		gtk_widget_destroy (priv->tts_debug);
 		priv->tts_debug = NULL;
@@ -7382,22 +7385,34 @@ ev_window_media_player_key_pressed (EvWindow    *window,
 	 * so we stick the most useful keybinding on the most
 	 * often seen keys
 	 */
-	if (strcmp (key, "Play") == 0) {
-		ev_window_run_presentation (window);
-	} else if (strcmp (key, "Previous") == 0) {
-		if (EV_WINDOW_IS_PRESENTATION (priv))
+	/* In presentation mode keep the slideshow bindings. */
+	if (EV_WINDOW_IS_PRESENTATION (priv)) {
+		if (strcmp (key, "Play") == 0)
+			ev_window_run_presentation (window);
+		else if (strcmp (key, "Previous") == 0 || strcmp (key, "Rewind") == 0)
 			ev_view_presentation_previous_page (EV_VIEW_PRESENTATION (priv->presentation_view));
-		else
-			g_action_group_activate_action (G_ACTION_GROUP (window), "go-previous-page", NULL);
-	} else if (strcmp (key, "Next") == 0) {
-		if (EV_WINDOW_IS_PRESENTATION (priv))
+		else if (strcmp (key, "Next") == 0 || strcmp (key, "FastForward") == 0)
 			ev_view_presentation_next_page (EV_VIEW_PRESENTATION (priv->presentation_view));
+		return;
+	}
+
+	/* Otherwise the media transport keys drive Read Aloud. Previous/Rewind
+	 * (e.g. F4) go a page back, Next/FastForward (e.g. F6) a page forward —
+	 * through the controller, so the reader jumps too when active. */
+	if (strcmp (key, "Play") == 0) {
+		if (!ev_tts_controller_is_active (priv->tts_controller))
+			ev_tts_controller_start (priv->tts_controller);
 		else
-			g_action_group_activate_action (G_ACTION_GROUP (window), "go-next-page", NULL);
-	} else if (strcmp (key, "FastForward") == 0) {
-		g_action_group_activate_action (G_ACTION_GROUP (window), "go-last-page", NULL);
-	} else if (strcmp (key, "Rewind") == 0) {
-		g_action_group_activate_action (G_ACTION_GROUP (window), "go-first-page", NULL);
+			ev_tts_controller_set_paused (priv->tts_controller,
+				!ev_tts_controller_get_paused (priv->tts_controller));
+	} else if (strcmp (key, "Pause") == 0) {
+		ev_tts_controller_set_paused (priv->tts_controller, TRUE);
+	} else if (strcmp (key, "Stop") == 0) {
+		ev_tts_controller_stop (priv->tts_controller);
+	} else if (strcmp (key, "Previous") == 0 || strcmp (key, "Rewind") == 0) {
+		ev_tts_controller_prev_page (priv->tts_controller);
+	} else if (strcmp (key, "Next") == 0 || strcmp (key, "FastForward") == 0) {
+		ev_tts_controller_next_page (priv->tts_controller);
 	}
 }
 
@@ -7814,6 +7829,9 @@ ev_window_init (EvWindow *ev_window)
 		hdy_header_bar_pack_end (header_bar, tts_bar);
 		gtk_widget_show_all (tts_bar);
 	}
+
+	/* MPRIS: lets media keys / headphone play-pause drive the reader. */
+	priv->tts_mpris = ev_tts_mpris_new (priv->tts_controller, GTK_WINDOW (ev_window));
 
 	priv->password_view_cancelled = FALSE;
 	priv->password_view = ev_password_view_new (GTK_WINDOW (ev_window));
