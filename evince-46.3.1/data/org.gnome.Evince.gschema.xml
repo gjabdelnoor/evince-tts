@@ -76,6 +76,10 @@
       <default>0</default>
       <summary>TTS speech pitch.</summary>
     </key>
+    <key type="b" name="tts-precache">
+      <default>true</default>
+      <summary>Pre-cache the surrounding pages while reading. Only takes effect after Read Aloud has been started once for a document; never pre-caches from merely sitting on a page.</summary>
+    </key>
     <child name="default" schema="org.gnome.Evince.Default"/>
   </schema>
 

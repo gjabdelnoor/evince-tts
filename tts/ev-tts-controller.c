@@ -57,6 +57,7 @@ struct _EvTtsController {
 
         gboolean         active;
         gboolean         paused;
+        gboolean         has_read_aloud; /* user started Read Aloud for this doc */
         double           volume;        /* playback volume 0..1 */
 
         /* Batch precache (env EV_TTS_PRECACHE), sequential + throttled. */
@@ -726,6 +727,12 @@ on_model_page_changed (EvDocumentModel *model, gint old, gint new_page,
 {
         if (self->active || self->precaching)
                 return;   /* active playback / batch precache drive their own work */
+        /* Never pre-cache from merely sitting on a page: only after the user has
+         * started Read Aloud for this document, and only if the option is on. */
+        if (!self->has_read_aloud)
+                return;
+        if (!g_settings_get_boolean (self->settings, "tts-precache"))
+                return;
         if (self->dwell_id)
                 g_source_remove (self->dwell_id);
         self->dwell_id = g_timeout_add (DWELL_MS, dwell_fire, self);
@@ -777,7 +784,10 @@ ev_tts_controller_invalidate_cache (EvTtsController *self)
                         gst_element_set_state (self->playbin, GST_STATE_NULL);
                 ensure_window (self, self->page);
                 ev_tts_controller_ensure_playing (self);
-        } else if (ev_tts_backend_is_configured (self->backend)) {
+        } else if (self->has_read_aloud &&
+                   g_settings_get_boolean (self->settings, "tts-precache") &&
+                   ev_tts_backend_is_configured (self->backend)) {
+                /* Only re-warm at rest if the user has read this doc and opted in. */
                 ensure_window (self, ev_document_model_get_page (self->model));
         }
 }
@@ -1069,22 +1079,21 @@ ev_tts_controller_maybe_precache (EvTtsController *self)
 static void
 on_document_notify (GObject *obj, GParamSpec *pspec, EvTtsController *self)
 {
+        /* New document: require a fresh Read Aloud click before idle pre-caching. */
+        self->has_read_aloud = FALSE;
         ev_tts_controller_maybe_precache (self);
 }
 
-void
-ev_tts_controller_start (EvTtsController *self)
+/* (Re)start reading at a specific page, from its first sentence. Safe to call
+ * whether idle or already reading (it re-anchors). */
+static void
+start_reading_at (EvTtsController *self, gint page)
 {
         PageCache *pc;
 
-        g_return_if_fail (EV_IS_TTS_CONTROLLER (self));
-
-        if (self->active)
-                return;
-
         ev_tts_controller_reload_config (self);
         if (!ev_tts_backend_is_configured (self->backend)) {
-                emit_status (self, "Set your MiniMax API key and voice in TTS Settings first.");
+                emit_status (self, "Set your API key and voice in TTS Settings first.");
                 return;
         }
         if (!ev_document_model_get_document (self->model)) {
@@ -1092,19 +1101,56 @@ ev_tts_controller_start (EvTtsController *self)
                 return;
         }
 
+        /* Stop any current clip before moving the read position. */
+        if (self->playbin)
+                gst_element_set_state (self->playbin, GST_STATE_NULL);
+
         self->active = TRUE;
         self->paused = FALSE;
+        self->has_read_aloud = TRUE;   /* unlocks idle pre-cache for this document */
         g_object_notify_by_pspec (G_OBJECT (self), props[PROP_ACTIVE]);
+        g_object_notify_by_pspec (G_OBJECT (self), props[PROP_PAUSED]);
 
-        self->page = ev_document_model_get_page (self->model);
+        self->page = page;
         self->cur = 0;
-        ensure_window (self, self->page);
+        ev_document_model_set_page (self->model, page);   /* keep view on this page */
+        ensure_window (self, page);
 
-        pc = page_get (self, self->page, TRUE);
+        pc = page_get (self, page, TRUE);
         if (!pc || pc->sentences->len == 0)
                 start_next_page (self);
         else
                 ev_tts_controller_ensure_playing (self);
+}
+
+void
+ev_tts_controller_start (EvTtsController *self)
+{
+        g_return_if_fail (EV_IS_TTS_CONTROLLER (self));
+        if (self->active)
+                return;
+        start_reading_at (self, ev_document_model_get_page (self->model));
+}
+
+/* The Play button (and Play media key): act on the page the user is looking at.
+ * Start there if idle, jump there if reading a different page, otherwise just
+ * pause/resume. So Play is never "useless" — it always reads the visible page. */
+void
+ev_tts_controller_play_pause (EvTtsController *self)
+{
+        gint visible;
+
+        g_return_if_fail (EV_IS_TTS_CONTROLLER (self));
+        if (!ev_document_model_get_document (self->model)) {
+                emit_status (self, "No document open.");
+                return;
+        }
+
+        visible = ev_document_model_get_page (self->model);
+        if (!self->active || self->page != visible)
+                start_reading_at (self, visible);            /* start / jump to here */
+        else
+                ev_tts_controller_set_paused (self, !self->paused);   /* same page */
 }
 
 void

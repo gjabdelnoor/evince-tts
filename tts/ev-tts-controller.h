@@ -21,6 +21,7 @@ EvTtsController *ev_tts_controller_new (EvView          *view,
 
 /* Begin/stop reading. Starting reads from the model's current page. */
 void     ev_tts_controller_start  (EvTtsController *self);
+void     ev_tts_controller_play_pause (EvTtsController *self);
 void     ev_tts_controller_stop   (EvTtsController *self);
 void     ev_tts_controller_toggle (EvTtsController *self);
 gboolean ev_tts_controller_is_active (EvTtsController *self);

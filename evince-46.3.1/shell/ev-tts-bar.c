@@ -129,11 +129,7 @@ on_next (GtkButton *b, EvTtsBar *self)  { ev_tts_controller_next_page (self->con
 static void
 on_play (GtkButton *b, EvTtsBar *self)
 {
-        if (!ev_tts_controller_is_active (self->controller))
-                ev_tts_controller_start (self->controller);
-        else
-                ev_tts_controller_set_paused (self->controller,
-                                              !ev_tts_controller_get_paused (self->controller));
+        ev_tts_controller_play_pause (self->controller);
         update_state (self);
 }
 

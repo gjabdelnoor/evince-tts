@@ -41,6 +41,7 @@ typedef struct {
         GtkWidget       *speed;
         GtkWidget       *vol;
         GtkWidget       *pitch;
+        GtkWidget       *precache;   /* GtkCheckButton */
         GtkWidget       *status;
 } Prefs;
 
@@ -154,6 +155,8 @@ on_response (GtkDialog *dialog, int response, gpointer user_data)
                                        gtk_spin_button_get_value (GTK_SPIN_BUTTON (p->vol)));
                 g_settings_set_int (p->settings, "tts-pitch",
                                     gtk_spin_button_get_value_as_int (GTK_SPIN_BUTTON (p->pitch)));
+                g_settings_set_boolean (p->settings, "tts-precache",
+                                        gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (p->precache)));
 
                 if (key && *key) {
                         g_autofree char *clean = g_strstrip (g_strdup (key));
@@ -285,6 +288,16 @@ ev_tts_show_preferences (GtkWindow *parent, EvTtsController *controller)
                             gtk_spin_button_new_with_range (-12, 12, 1));
         gtk_spin_button_set_value (GTK_SPIN_BUTTON (p->pitch),
                                    g_settings_get_int (p->settings, "tts-pitch"));
+
+        p->precache = gtk_check_button_new_with_label (
+                "Pre-cache surrounding pages while reading");
+        gtk_widget_set_tooltip_text (p->precache,
+                "Synthesizes the next/previous pages in the background once you start "
+                "Read Aloud, so playback is seamless. Never runs from just sitting on a "
+                "page; turn off to only synthesize what you actively play.");
+        gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (p->precache),
+                                      g_settings_get_boolean (p->settings, "tts-precache"));
+        gtk_grid_attach (GTK_GRID (grid), p->precache, 1, row++, 1, 1);
 
         p->status = gtk_label_new (NULL);
         gtk_widget_set_halign (p->status, GTK_ALIGN_START);

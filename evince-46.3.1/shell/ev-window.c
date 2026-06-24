@@ -7400,11 +7400,7 @@ ev_window_media_player_key_pressed (EvWindow    *window,
 	 * (e.g. F4) go a page back, Next/FastForward (e.g. F6) a page forward —
 	 * through the controller, so the reader jumps too when active. */
 	if (strcmp (key, "Play") == 0) {
-		if (!ev_tts_controller_is_active (priv->tts_controller))
-			ev_tts_controller_start (priv->tts_controller);
-		else
-			ev_tts_controller_set_paused (priv->tts_controller,
-				!ev_tts_controller_get_paused (priv->tts_controller));
+		ev_tts_controller_play_pause (priv->tts_controller);
 	} else if (strcmp (key, "Pause") == 0) {
 		ev_tts_controller_set_paused (priv->tts_controller, TRUE);
 	} else if (strcmp (key, "Stop") == 0) {

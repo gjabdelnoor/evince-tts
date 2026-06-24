@@ -98,10 +98,7 @@ player_method (GDBusConnection *conn, const char *sender, const char *path,
         EvTtsController *c = self->controller;
 
         if (g_strcmp0 (method, "PlayPause") == 0) {
-                if (!ev_tts_controller_is_active (c))
-                        ev_tts_controller_start (c);
-                else
-                        ev_tts_controller_set_paused (c, !ev_tts_controller_get_paused (c));
+                ev_tts_controller_play_pause (c);
         } else if (g_strcmp0 (method, "Play") == 0) {
                 if (!ev_tts_controller_is_active (c))
                         ev_tts_controller_start (c);
